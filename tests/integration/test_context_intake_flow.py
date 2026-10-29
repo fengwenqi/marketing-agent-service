@@ -1,3 +1,5 @@
+from uuid import UUID
+
 from fastapi.testclient import TestClient
 
 from app.hermes.contracts import MarketingContextResult
@@ -68,4 +70,26 @@ def test_message_in_ready_state_returns_conflict() -> None:
     )
 
     assert response.status_code == 409
+
+
+def test_gateway_failure_keeps_message_and_restores_retryable_state() -> None:
+    hermes = FakeHermesAdapter([RuntimeError("gateway unavailable")])
+    app = create_app(hermes=hermes)
+    client = TestClient(app, raise_server_exceptions=False)
+    campaign = client.post(
+        "/api/v1/campaigns",
+        json={"title": "可重试活动"},
+        headers={"Idempotency-Key": "create-failure"},
+    ).json()
+
+    response = client.post(
+        f"/api/v1/campaigns/{campaign['id']}/messages",
+        json={"content": "请采集上下文"},
+        headers={"Idempotency-Key": "message-failure"},
+    )
+    stored = app.state.campaign_service.get(UUID(campaign["id"]))
+
+    assert response.status_code == 503
+    assert stored.state == "DRAFT"
+    assert stored.messages == [{"role": "user", "content": "请采集上下文"}]
 

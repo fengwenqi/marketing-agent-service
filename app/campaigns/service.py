@@ -11,6 +11,10 @@ class CampaignNotFoundError(KeyError):
     pass
 
 
+class ExternalServiceError(RuntimeError):
+    pass
+
+
 @dataclass
 class CampaignRecord:
     id: UUID
@@ -52,6 +56,7 @@ class CampaignService:
             return cached
 
         campaign = self.get(campaign_id)
+        previous_state = campaign.state
         try:
             collecting_state = transition(campaign.state, CampaignEvent.MESSAGE_RECEIVED)
         except InvalidTransitionError:
@@ -60,13 +65,18 @@ class CampaignService:
         # 先保存用户原话，再调用外部 Agent；即使 Gateway 暂时失败，用户输入也不会丢失。
         campaign.messages.append({"role": "user", "content": content})
         campaign.state = collecting_state
-        result = await self.hermes.run_context_intake(
-            ContextIntakeRequest(
-                campaign_id=str(campaign_id),
-                request_id=f"{campaign_id}:{idempotency_key}",
-                message=content,
+        try:
+            result = await self.hermes.run_context_intake(
+                ContextIntakeRequest(
+                    campaign_id=str(campaign_id),
+                    request_id=f"{campaign_id}:{idempotency_key}",
+                    message=content,
+                )
             )
-        )
+        except Exception as error:
+            # 外部调用失败不能让活动永久卡在“采集中”；保留原话，恢复到调用前状态供重试。
+            campaign.state = previous_state
+            raise ExternalServiceError("Hermes Gateway is temporarily unavailable") from error
         campaign.state = transition(campaign.state, map_context_result(result))
         campaign.context = result.model_dump(mode="json")
         campaign.messages.append(
