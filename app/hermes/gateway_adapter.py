@@ -61,6 +61,9 @@ class HermesGatewayAdapter:
 
     @staticmethod
     async def _wait_for_completion(client: Any, session_id: str, admission_id: str | None) -> str:
+        # Gateway 会通过 message.delta 流式发送正文。message.complete 主要表示本轮结束，
+        # 其中的 text 在部分响应路径下可能为空，因此必须保留本轮的增量文本作为回退。
+        streamed_chunks: list[str] = []
         async with asyncio.timeout(300):
             while True:
                 event = await client.events.get()
@@ -74,16 +77,47 @@ class HermesGatewayAdapter:
                 )
                 if admission_id and event_admission != admission_id:
                     continue
-                if params.get("type") == "message.complete":
-                    payload = params.get("payload", {})
-                    return payload.get("text") or payload.get("content") or ""
+                event_type = params.get("type")
+                payload = params.get("payload", {})
+                completed_text = HermesGatewayAdapter._consume_turn_event(
+                    event_type, payload, streamed_chunks
+                )
+                if completed_text is not None:
+                    return completed_text
+
+    @staticmethod
+    def _consume_turn_event(
+        event_type: str | None, payload: dict[str, Any], streamed_chunks: list[str]
+    ) -> str | None:
+        if event_type == "message.delta":
+            chunk = payload.get("text") or payload.get("delta") or payload.get("content")
+            if isinstance(chunk, str) and chunk:
+                streamed_chunks.append(chunk)
+            return None
+        if event_type != "message.complete":
+            return None
+        if payload.get("status") == "error":
+            detail = payload.get("error") or payload.get("text") or "unknown error"
+            raise HermesGatewayError(f"Hermes turn failed: {detail}")
+
+        # 完成事件有正文时，它是本轮权威结果；否则使用之前收到的流式正文。
+        completed_text = payload.get("text") or payload.get("content")
+        if isinstance(completed_text, str) and completed_text:
+            return completed_text
+        streamed_text = "".join(streamed_chunks)
+        if streamed_text:
+            return streamed_text
+        raise HermesGatewayError("Hermes completed without response text")
 
     @staticmethod
     def _decode_json(text: str) -> dict[str, Any]:
         try:
             value = json.loads(text)
         except json.JSONDecodeError as error:
-            raise HermesGatewayError("Hermes returned invalid JSON") from error
+            preview = text.strip().replace("\n", " ")[:200]
+            raise HermesGatewayError(
+                f"Hermes returned invalid JSON (response preview: {preview!r})"
+            ) from error
         if not isinstance(value, dict):
             raise HermesGatewayError("Hermes result must be a JSON object")
         return value

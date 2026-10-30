@@ -10,16 +10,23 @@ from app.main import create_app
 def blocked_result() -> MarketingContextResult:
     return MarketingContextResult.model_validate(
         {
+            "schema_version": "1.0",
             "status": "BLOCKED",
             "generation_mode": None,
+            "warnings_accepted": False,
+            "original_request": "推广小米17 Pro",
             "goal": {"product": "小米17 Pro"},
-            "product": {"product_key": "xiaomi-17-pro"},
+            "product_profile": {"product_key": "xiaomi-17-pro"},
+            "enterprise_profile": {},
+            "marketing_evidence": {},
             "missing_required": ["target_audience"],
             "missing_optional": [],
             "conflicts": [],
+            "field_sources": {},
             "evidence": [],
-            "warnings_accepted": False,
             "next_action": "询问目标人群",
+            "next_question": "目标人群是谁？",
+            "persistence": {"saved": False, "note": "本地第一版未接入数据库"},
         }
     )
 

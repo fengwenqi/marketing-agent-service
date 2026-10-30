@@ -1,3 +1,4 @@
+import logging
 from dataclasses import dataclass, field
 from uuid import UUID, uuid4
 
@@ -5,6 +6,8 @@ from app.campaigns.domain import CampaignEvent, CampaignState
 from app.campaigns.state_machine import InvalidTransitionError, transition
 from app.hermes.ports import ContextIntakeRequest, HermesPort
 from app.hermes.result_mapper import map_context_result
+
+logger = logging.getLogger(__name__)
 
 
 class CampaignNotFoundError(KeyError):
@@ -76,6 +79,13 @@ class CampaignService:
         except Exception as error:
             # 外部调用失败不能让活动永久卡在“采集中”；保留原话，恢复到调用前状态供重试。
             campaign.state = previous_state
+            # API 对外保持稳定的 503，但服务端日志必须保留原始异常与堆栈，
+            # 否则 Gateway、Skill、模型输出和结构校验错误都会被同一条消息掩盖。
+            logger.exception(
+                "Hermes context intake failed: campaign_id=%s request_id=%s",
+                campaign_id,
+                f"{campaign_id}:{idempotency_key}",
+            )
             raise ExternalServiceError("Hermes Gateway is temporarily unavailable") from error
         campaign.state = transition(campaign.state, map_context_result(result))
         campaign.context = result.model_dump(mode="json")
