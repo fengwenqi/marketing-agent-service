@@ -12,7 +12,12 @@ from app.campaigns.schemas import (
     MessageCreate,
     MessageView,
 )
-from app.campaigns.service import CampaignNotFoundError, CampaignService, ExternalServiceError
+from app.campaigns.service import (
+    CampaignNotFoundError,
+    CampaignService,
+    ExternalServiceError,
+    IdempotencyConflictError,
+)
 from app.campaigns.state_machine import InvalidTransitionError
 from app.database import get_session
 
@@ -70,6 +75,8 @@ async def submit_message(
     except CampaignNotFoundError as error:
         raise HTTPException(status_code=404, detail="campaign not found") from error
     except InvalidTransitionError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except IdempotencyConflictError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     except ExternalServiceError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error

@@ -106,3 +106,35 @@ async def test_duplicate_message_after_restart_does_not_call_hermes_again() -> N
 
     assert duplicate.json() == first.json()
     assert restarted_hermes.call_count == 0
+
+
+@pytest.mark.integration
+async def test_failed_hermes_call_keeps_user_message_and_restores_campaign_state() -> None:
+    marker = uuid4().hex
+    failing_client = await client_for(FakeHermesAdapter([RuntimeError("gateway down")]))
+    async with failing_client:
+        campaign = (
+            await failing_client.post(
+                "/api/v1/campaigns",
+                json={"title": f"失败恢复-{marker}"},
+                headers={"Idempotency-Key": f"create-failure-{marker}"},
+            )
+        ).json()
+        failed = await failing_client.post(
+            f"/api/v1/campaigns/{campaign['id']}/messages",
+            json={"content": "必须保留的用户原话"},
+            headers={"Idempotency-Key": f"failure-{marker}"},
+        )
+
+    restarted_client = await client_for(FakeHermesAdapter([]))
+    async with restarted_client:
+        detail = await restarted_client.get(f"/api/v1/campaigns/{campaign['id']}")
+        history = await restarted_client.get(
+            f"/api/v1/campaigns/{campaign['id']}/messages"
+        )
+
+    assert failed.status_code == 503
+    assert detail.json()["state"] == "DRAFT"
+    assert [(item["role"], item["content"]) for item in history.json()] == [
+        ("user", "必须保留的用户原话")
+    ]

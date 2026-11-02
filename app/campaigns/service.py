@@ -19,6 +19,10 @@ class ExternalServiceError(RuntimeError):
     pass
 
 
+class IdempotencyConflictError(ValueError):
+    pass
+
+
 class CampaignService:
     """编排数据库事务与 Hermes 调用，不把长时间 Agent 请求包在数据库事务中。"""
 
@@ -66,13 +70,21 @@ class CampaignService:
             raise CampaignNotFoundError(campaign_id)
         previous_state = CampaignState(campaign.state)
         collecting_state = transition(previous_state, CampaignEvent.MESSAGE_RECEIVED)
-        await self.repository.append_message(
-            campaign_id=campaign_id,
-            role="user",
-            content=content,
-            payload=None,
-            idempotency_key=idempotency_key,
+        existing_user_message = await self.repository.get_message_by_idempotency(
+            campaign_id, idempotency_key
         )
+        if existing_user_message is None:
+            await self.repository.append_message(
+                campaign_id=campaign_id,
+                role="user",
+                content=content,
+                payload=None,
+                idempotency_key=idempotency_key,
+            )
+        elif existing_user_message.content != content:
+            raise IdempotencyConflictError(
+                "Idempotency-Key was already used with different message content"
+            )
         campaign.state = collecting_state.value
         self.repository.add_transition(
             campaign_id=campaign_id,
@@ -95,7 +107,7 @@ class CampaignService:
                 ContextIntakeRequest(
                     campaign_id=str(campaign_id),
                     request_id=request_id,
-                    message=content,
+                    message=existing_user_message.content if existing_user_message else content,
                     stored_session_id=stored_session_id,
                     context=context_snapshot,
                     recent_messages=recent_messages,
@@ -112,7 +124,7 @@ class CampaignService:
                     to_state=previous_state.value,
                     event="HERMES_FAILED",
                 )
-                self.repository.add_execution(
+                await self.repository.save_execution(
                     campaign_id=campaign_id,
                     request_id=request_id,
                     skill="marketing-context-intake",
@@ -152,7 +164,7 @@ class CampaignService:
             to_state=completed_state.value,
             event=result_event.value,
         )
-        self.repository.add_execution(
+        await self.repository.save_execution(
             campaign_id=campaign_id,
             request_id=request_id,
             skill="marketing-context-intake",

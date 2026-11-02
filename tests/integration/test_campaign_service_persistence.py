@@ -1,13 +1,15 @@
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import select
 
 from app.campaigns.repository import CampaignRepository
-from app.campaigns.service import CampaignService
+from app.campaigns.service import CampaignService, ExternalServiceError
 from app.database import SessionFactory, engine
 from app.hermes.contracts import MarketingContextResult
 from app.hermes.fake_adapter import FakeHermesAdapter
 from app.hermes.ports import ContextIntakeResponse
+from app.models.business import HermesExecution
 
 
 def blocked_result() -> MarketingContextResult:
@@ -111,3 +113,34 @@ async def test_second_turn_reuses_persisted_hermes_session_and_context() -> None
         "第二轮",
     ]
     assert loaded.hermes_stored_session_id == f"stored-{marker}"
+
+
+@pytest.mark.integration
+async def test_failed_turn_can_retry_same_key_without_duplicate_user_message() -> None:
+    marker = uuid4().hex
+    key = f"retry-{marker}"
+    async with SessionFactory() as session:
+        failing = CampaignService(
+            CampaignRepository(session), FakeHermesAdapter([RuntimeError("gateway down")])
+        )
+        campaign = await failing.create(f"重试活动-{marker}", f"create-retry-{marker}")
+        with pytest.raises(ExternalServiceError):
+            await failing.submit_message(campaign.id, "保留这条原话", key)
+
+    async with SessionFactory() as session:
+        retrying = CampaignService(
+            CampaignRepository(session), FakeHermesAdapter([blocked_result()])
+        )
+        response = await retrying.submit_message(campaign.id, "保留这条原话", key)
+        history = await retrying.list_messages(campaign.id)
+        execution = await session.scalar(
+            select(HermesExecution).where(
+                HermesExecution.request_id == f"{campaign.id}:{key}"
+            )
+        )
+
+    assert response["campaign_state"] == "CONTEXT_BLOCKED"
+    assert [message.role for message in history] == ["user", "assistant"]
+    assert execution is not None
+    assert execution.status == "SUCCEEDED"
+    assert execution.error is None

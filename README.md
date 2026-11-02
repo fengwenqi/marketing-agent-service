@@ -54,7 +54,9 @@ Hermes Gateway 独立服务端进程
      调用 LLM、Skill 和 Tools
 ```
 
-`gateway_client` 位于 FastAPI 进程中，只负责连接、发送 RPC 和接收事件；Hermes Gateway 是独立的服务端进程，负责管理连接、会话和 Agent 执行；`AIAgent` 是 Gateway 进程内部的 Agent 运行实例，不会再启动另一个 Gateway。一个 Gateway 进程可以同时管理多个 Agent 会话，每次调用 `session.create` 创建的是新会话，而不是新的 Gateway 进程。
+`gateway_client` 位于 FastAPI 进程中，只负责连接、发送 RPC 和接收事件；Hermes Gateway 是独立的服务端进程，负责管理连接、会话和 Agent 执行；`AIAgent` 是 Gateway 进程内部的 Agent 运行实例，不会再启动另一个 Gateway。一个 Gateway 进程可以同时管理多个 Agent 会话。
+
+活动第一次对话调用 `session.create`，并把 Gateway 返回的 `stored_session_id` 写入 PostgreSQL；后续对话调用 `session.resume` 恢复同一 Agent 会话。运行期 `session_id` 只在当前 Gateway 进程中有效，不能当成持久化会话 ID。若 Hermes 的 `state.db` 中已找不到原会话，适配器会创建替代会话，并使用 PostgreSQL 保存的结构化活动上下文和最近消息恢复对话。
 
 如果 Gateway 尚未运行，`connect_gateway()` 默认会通过 `ensure_gateway_runtime()` 尝试启动临时 Gateway。FastAPI 业务层只依赖 `HermesPort`，具体的 Gateway 通信集中封装在 `HermesGatewayAdapter` 中，便于以后替换传输实现而不修改活动状态机和业务服务。
 
@@ -71,7 +73,9 @@ Alembic 管理的是表、字段、索引、外键和唯一约束等数据库结
 - `state_transitions`
 - `idempotency_records`
 
-当前 `CampaignService` 仍使用 Python 内存仓库存储活动和消息，PostgreSQL 表已准备好但尚未接入 API 的实际读写，因此重启 FastAPI 后活动数据会丢失。下一阶段需要实现 SQLAlchemy Repository，并将内存仓库替换为 PostgreSQL 持久化实现。
+PostgreSQL 已是活动业务数据的事实来源。每个 HTTP 请求创建独立的 SQLAlchemy Session，`CampaignService` 通过 `CampaignRepository` 持久化活动、结构化上下文、对话历史、状态流转、Hermes 执行结果和幂等结果。重启 FastAPI 后数据不会丢失，前端可重新读取活动并继续原来的 Hermes 会话。
+
+用户消息会在调用 Hermes 前先提交，因此 Gateway 超时或输出无效时，用户原话仍然保留，活动状态会恢复到调用前状态；使用相同 `Idempotency-Key` 可安全重试。成功响应也会按幂等键保存，网络重试不会再次调用 Hermes。PostgreSQL 需要按生产要求备份；Hermes `state.db` 丢失不会丢业务数据，但后续对话会通过 PostgreSQL 内容重建 Agent 上下文。
 
 ### 使用 DBeaver 查看 PostgreSQL
 
@@ -103,6 +107,7 @@ Password: marketing_agent_dev
 - `GET /health`
 - `POST /api/v1/campaigns`
 - `GET /api/v1/campaigns/{campaign_id}`
+- `GET /api/v1/campaigns/{campaign_id}/messages`
 - `POST /api/v1/campaigns/{campaign_id}/messages`
 
 ## 代码阅读建议

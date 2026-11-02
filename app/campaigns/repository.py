@@ -76,6 +76,16 @@ class CampaignRepository:
             return list(reversed(recent.all()))
         return list((await self.session.scalars(statement)).all())
 
+    async def get_message_by_idempotency(
+        self, campaign_id: UUID, key: str
+    ) -> ConversationMessage | None:
+        return await self.session.scalar(
+            select(ConversationMessage).where(
+                ConversationMessage.campaign_id == campaign_id,
+                ConversationMessage.idempotency_key == key,
+            )
+        )
+
     async def get_idempotency(self, scope: str, key: str) -> dict[str, Any] | None:
         record = await self.session.scalar(
             select(IdempotencyRecord).where(
@@ -108,7 +118,7 @@ class CampaignRepository:
             )
         )
 
-    def add_execution(
+    async def save_execution(
         self,
         *,
         campaign_id: UUID,
@@ -119,16 +129,23 @@ class CampaignRepository:
         input_payload: dict[str, Any],
         output_payload: dict[str, Any] | None = None,
         error: str | None = None,
-    ) -> None:
-        self.session.add(
-            HermesExecution(
+    ) -> HermesExecution:
+        # request_id 代表一次幂等业务请求。失败后重试时更新原记录，既保留
+        # 唯一约束，也让调用方看到这个请求最终的执行结果。
+        execution = await self.session.scalar(
+            select(HermesExecution).where(HermesExecution.request_id == request_id)
+        )
+        if execution is None:
+            execution = HermesExecution(
                 campaign_id=campaign_id,
                 request_id=request_id,
-                skill=skill,
-                hermes_session_id=stored_session_id,
-                status=status,
-                input_payload=input_payload,
-                output_payload=output_payload,
-                error=error,
             )
-        )
+            self.session.add(execution)
+
+        execution.skill = skill
+        execution.hermes_session_id = stored_session_id
+        execution.status = status
+        execution.input_payload = input_payload
+        execution.output_payload = output_payload
+        execution.error = error
+        return execution
