@@ -25,14 +25,21 @@ class Campaign(TimestampMixin, Base):
     state: Mapped[str] = mapped_column(String(64), index=True)
     context: Mapped[dict[str, Any] | None] = mapped_column(json_type)
     version: Mapped[int] = mapped_column(default=1)
+    # Gateway 的 runtime session_id 只在当前进程有效；这里只保存可跨重启恢复的 ID。
+    hermes_stored_session_id: Mapped[str | None] = mapped_column(String(128))
 
 
 class ConversationMessage(TimestampMixin, Base):
     __tablename__ = "conversation_messages"
-    __table_args__ = (UniqueConstraint("campaign_id", "idempotency_key"),)
+    __table_args__ = (
+        UniqueConstraint("campaign_id", "idempotency_key"),
+        UniqueConstraint("campaign_id", "sequence", name="uq_message_campaign_sequence"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     campaign_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("campaigns.id"), index=True)
+    # 时间戳相同时仍按活动内序号稳定排序。
+    sequence: Mapped[int] = mapped_column(nullable=False)
     role: Mapped[str] = mapped_column(String(16))
     content: Mapped[str] = mapped_column(Text)
     payload: Mapped[dict[str, Any] | None] = mapped_column(json_type)
