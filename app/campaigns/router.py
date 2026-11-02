@@ -1,49 +1,72 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.campaigns.schemas import CampaignCreate, CampaignView, ContextIntakeView, MessageCreate
+from app.campaigns.repository import CampaignRepository
+from app.campaigns.schemas import (
+    CampaignCreate,
+    CampaignView,
+    ContextIntakeView,
+    MessageCreate,
+    MessageView,
+)
 from app.campaigns.service import CampaignNotFoundError, CampaignService, ExternalServiceError
 from app.campaigns.state_machine import InvalidTransitionError
+from app.database import get_session
 
 router = APIRouter(prefix="/api/v1/campaigns", tags=["campaigns"])
 
 
-def service_from(request: Request) -> CampaignService:
-    return request.app.state.campaign_service
+def service_from(
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> CampaignService:
+    return CampaignService(CampaignRepository(session), request.app.state.hermes)
+
+
+ServiceDependency = Annotated[CampaignService, Depends(service_from)]
 
 
 @router.post("", response_model=CampaignView, status_code=status.HTTP_201_CREATED)
 async def create_campaign(
     body: CampaignCreate,
-    request: Request,
+    service: ServiceDependency,
     idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
 ) -> CampaignView:
-    campaign = service_from(request).create(body.title, idempotency_key)
-    return CampaignView(id=campaign.id, title=campaign.title, state=campaign.state)
+    campaign = await service.create(body.title, idempotency_key)
+    return CampaignView.model_validate(campaign)
 
 
 @router.get("/{campaign_id}", response_model=CampaignView)
-async def get_campaign(campaign_id: UUID, request: Request) -> CampaignView:
+async def get_campaign(campaign_id: UUID, service: ServiceDependency) -> CampaignView:
     try:
-        campaign = service_from(request).get(campaign_id)
+        campaign = await service.get(campaign_id)
     except CampaignNotFoundError as error:
         raise HTTPException(status_code=404, detail="campaign not found") from error
-    return CampaignView(id=campaign.id, title=campaign.title, state=campaign.state)
+    return CampaignView.model_validate(campaign)
+
+
+@router.get("/{campaign_id}/messages", response_model=list[MessageView])
+async def list_messages(campaign_id: UUID, service: ServiceDependency) -> list[MessageView]:
+    try:
+        messages = await service.list_messages(campaign_id)
+    except CampaignNotFoundError as error:
+        raise HTTPException(status_code=404, detail="campaign not found") from error
+    # 页面历史以 PostgreSQL 为准；Hermes state.db 只负责 Agent 自身上下文。
+    return [MessageView.model_validate(message) for message in messages]
 
 
 @router.post("/{campaign_id}/messages", response_model=ContextIntakeView)
 async def submit_message(
     campaign_id: UUID,
     body: MessageCreate,
-    request: Request,
+    service: ServiceDependency,
     idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
 ) -> ContextIntakeView:
     try:
-        result = await service_from(request).submit_message(
-            campaign_id, body.content, idempotency_key
-        )
+        result = await service.submit_message(campaign_id, body.content, idempotency_key)
     except CampaignNotFoundError as error:
         raise HTTPException(status_code=404, detail="campaign not found") from error
     except InvalidTransitionError as error:
@@ -51,4 +74,3 @@ async def submit_message(
     except ExternalServiceError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
     return ContextIntakeView.model_validate(result)
-
