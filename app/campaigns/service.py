@@ -80,14 +80,25 @@ class CampaignService:
             to_state=collecting_state.value,
             event=CampaignEvent.MESSAGE_RECEIVED.value,
         )
+        recent_rows = await self.repository.list_messages(campaign_id, limit=20)
+        recent_messages = [
+            {"role": message.role, "content": message.content} for message in recent_rows
+        ]
+        stored_session_id = campaign.hermes_stored_session_id
+        context_snapshot = campaign.context
         # 先提交用户消息并释放行锁，避免 LLM 执行期间长期占用数据库连接和锁。
         await self.repository.session.commit()
 
         request_id = f"{campaign_id}:{idempotency_key}"
         try:
-            result = await self.hermes.run_context_intake(
+            hermes_response = await self.hermes.run_context_intake(
                 ContextIntakeRequest(
-                    campaign_id=str(campaign_id), request_id=request_id, message=content
+                    campaign_id=str(campaign_id),
+                    request_id=request_id,
+                    message=content,
+                    stored_session_id=stored_session_id,
+                    context=context_snapshot,
+                    recent_messages=recent_messages,
                 )
             )
         except Exception as error:
@@ -121,11 +132,13 @@ class CampaignService:
         completed_campaign = await self.repository.lock_campaign(campaign_id)
         if completed_campaign is None:
             raise CampaignNotFoundError(campaign_id)
+        result = hermes_response.result
         result_event = map_context_result(result)
         completed_state = transition(collecting_state, result_event)
         payload = result.model_dump(mode="json")
         completed_campaign.state = completed_state.value
         completed_campaign.context = payload
+        completed_campaign.hermes_stored_session_id = hermes_response.stored_session_id
         await self.repository.append_message(
             campaign_id=campaign_id,
             role="assistant",
@@ -143,7 +156,7 @@ class CampaignService:
             campaign_id=campaign_id,
             request_id=request_id,
             skill="marketing-context-intake",
-            stored_session_id=completed_campaign.hermes_stored_session_id,
+            stored_session_id=hermes_response.stored_session_id,
             status="SUCCEEDED",
             input_payload={"message": content},
             output_payload=payload,

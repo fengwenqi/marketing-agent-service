@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from app.hermes.contracts import MarketingContextResult
-from app.hermes.ports import ContextIntakeRequest
+from app.hermes.ports import ContextIntakeRequest, ContextIntakeResponse
 
 
 class HermesGatewayError(RuntimeError):
@@ -19,7 +19,7 @@ class HermesGatewayAdapter:
         self.hermes_source = hermes_source
         self.workspace = workspace
 
-    async def run_context_intake(self, request: ContextIntakeRequest) -> MarketingContextResult:
+    async def run_context_intake(self, request: ContextIntakeRequest) -> ContextIntakeResponse:
         # Hermes 目前没有稳定的独立 Python SDK，因此只在此处延迟导入其客户端。
         source = str(self.hermes_source)
         if source not in sys.path:
@@ -27,36 +27,79 @@ class HermesGatewayAdapter:
         from hermes_cli.gateway_client import connect_gateway
 
         async with connect_gateway() as client:
-            description = await client.rpc("runtime.describe")
-            parameters = description.get("session_create", {}).get("parameters", [])
-            if "skills" not in parameters:
-                raise HermesGatewayError("Gateway session.create does not support skills")
-
-            snapshot = await client.rpc(
-                "session.create",
-                request_id=request.request_id,
-                source="tool",
-                cwd=str(self.workspace),
-                skills=["marketing-context-intake"],
-            )
-            session_id = snapshot["stored_session_id"]
+            session_id, stored_session_id, recovering = await self._open_session(client, request)
             receipt = await client.rpc(
                 "prompt.submit",
                 session_id=session_id,
                 input_id=request.request_id,
-                text=self._prompt(request.message),
+                text=self._prompt(request, recovering=recovering),
                 finite=True,
                 unattended=True,
             )
             admission_id = receipt.get("admission_id")
             text = await self._wait_for_completion(client, session_id, admission_id)
-            return MarketingContextResult.model_validate(self._decode_json(text))
+            result = MarketingContextResult.model_validate(self._decode_json(text))
+            return ContextIntakeResponse(result=result, stored_session_id=stored_session_id)
+
+    async def _open_session(
+        self, client: Any, request: ContextIntakeRequest
+    ) -> tuple[str, str, bool]:
+        if request.stored_session_id:
+            try:
+                snapshot = await client.rpc(
+                    "session.resume",
+                    session_id=request.stored_session_id,
+                    source="tool",
+                )
+                runtime_id = snapshot["session_id"]
+                stored_id = snapshot.get("stored_session_id") or request.stored_session_id
+                return runtime_id, stored_id, False
+            except Exception as error:
+                if str(error) not in {"not_found", "session_not_found"}:
+                    raise
+                # state.db 中的会话丢失时创建替代会话，随后用 PostgreSQL 内容补水。
+                runtime_id, stored_id = await self._create_session(client, request)
+                return runtime_id, stored_id, True
+
+        runtime_id, stored_id = await self._create_session(client, request)
+        return runtime_id, stored_id, False
+
+    async def _create_session(
+        self, client: Any, request: ContextIntakeRequest
+    ) -> tuple[str, str]:
+        description = await client.rpc("runtime.describe")
+        parameters = description.get("session_create", {}).get("parameters", [])
+        if "skills" not in parameters:
+            raise HermesGatewayError("Gateway session.create does not support skills")
+        snapshot = await client.rpc(
+            "session.create",
+            request_id=request.request_id,
+            source="tool",
+            cwd=str(self.workspace),
+            skills=["marketing-context-intake"],
+        )
+        runtime_id = snapshot["session_id"]
+        return runtime_id, snapshot.get("stored_session_id") or runtime_id
 
     @staticmethod
-    def _prompt(message: str) -> str:
-        return (
+    def _prompt(request: ContextIntakeRequest, *, recovering: bool) -> str:
+        base = (
             "请执行 marketing-context-intake。最终只输出符合该 Skill 模板的 JSON，"
-            "不要使用 Markdown 代码块。用户输入：\n" + message
+            "不要使用 Markdown 代码块。"
+        )
+        if not recovering:
+            return base + "用户输入：\n" + request.message
+        recovery = {
+            "structured_context": request.context or {},
+            "recent_messages": request.recent_messages or [],
+        }
+        return (
+            base
+            + "Hermes 原会话不可用，请根据 PostgreSQL 中保存的上下文继续，不要重复已确认信息。"
+            + "\n恢复数据：\n"
+            + json.dumps(recovery, ensure_ascii=False)
+            + "\n本次用户输入：\n"
+            + request.message
         )
 
     @staticmethod
