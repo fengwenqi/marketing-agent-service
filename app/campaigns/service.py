@@ -1,11 +1,12 @@
 import logging
-from dataclasses import dataclass, field
 from uuid import UUID, uuid4
 
 from app.campaigns.domain import CampaignEvent, CampaignState
-from app.campaigns.state_machine import InvalidTransitionError, transition
+from app.campaigns.repository import CampaignRepository
+from app.campaigns.state_machine import transition
 from app.hermes.ports import ContextIntakeRequest, HermesPort
 from app.hermes.result_mapper import map_context_result
+from app.models.business import Campaign, ConversationMessage
 
 logger = logging.getLogger(__name__)
 
@@ -18,85 +19,142 @@ class ExternalServiceError(RuntimeError):
     pass
 
 
-@dataclass
-class CampaignRecord:
-    id: UUID
-    title: str
-    state: CampaignState = CampaignState.DRAFT
-    context: dict | None = None
-    messages: list[dict] = field(default_factory=list)
-
-
 class CampaignService:
-    """第一阶段的应用服务；接口稳定后将存储实现替换成 PostgreSQL Repository。"""
+    """编排数据库事务与 Hermes 调用，不把长时间 Agent 请求包在数据库事务中。"""
 
-    def __init__(self, hermes: HermesPort) -> None:
+    def __init__(self, repository: CampaignRepository, hermes: HermesPort) -> None:
+        self.repository = repository
         self.hermes = hermes
-        self.campaigns: dict[UUID, CampaignRecord] = {}
-        self.idempotent_responses: dict[tuple[str, str], dict] = {}
 
-    def create(self, title: str, idempotency_key: str) -> CampaignRecord:
-        cache_key = ("create-campaign", idempotency_key)
-        cached = self.idempotent_responses.get(cache_key)
+    async def create(self, title: str, idempotency_key: str) -> Campaign:
+        scope = "create-campaign"
+        cached = await self.repository.get_idempotency(scope, idempotency_key)
         if cached:
-            return self.campaigns[UUID(cached["id"])]
-        campaign = CampaignRecord(id=uuid4(), title=title)
-        self.campaigns[campaign.id] = campaign
-        self.idempotent_responses[cache_key] = {"id": str(campaign.id)}
+            campaign = await self.repository.get_campaign(UUID(cached["id"]))
+            if campaign is not None:
+                return campaign
+
+        campaign = Campaign(id=uuid4(), title=title, state=CampaignState.DRAFT.value)
+        self.repository.add_campaign(campaign)
+        await self.repository.save_idempotency(
+            scope=scope, key=idempotency_key, response={"id": str(campaign.id)}
+        )
+        await self.repository.session.commit()
         return campaign
 
-    def get(self, campaign_id: UUID) -> CampaignRecord:
-        try:
-            return self.campaigns[campaign_id]
-        except KeyError as error:
-            raise CampaignNotFoundError(campaign_id) from error
+    async def get(self, campaign_id: UUID) -> Campaign:
+        campaign = await self.repository.get_campaign(campaign_id)
+        if campaign is None:
+            raise CampaignNotFoundError(campaign_id)
+        return campaign
+
+    async def list_messages(self, campaign_id: UUID) -> list[ConversationMessage]:
+        if await self.repository.get_campaign(campaign_id) is None:
+            raise CampaignNotFoundError(campaign_id)
+        return await self.repository.list_messages(campaign_id)
 
     async def submit_message(
         self, campaign_id: UUID, content: str, idempotency_key: str
     ) -> dict:
-        cache_key = (f"message:{campaign_id}", idempotency_key)
-        if cached := self.idempotent_responses.get(cache_key):
+        scope = f"message:{campaign_id}"
+        cached = await self.repository.get_idempotency(scope, idempotency_key)
+        if cached:
             return cached
 
-        campaign = self.get(campaign_id)
-        previous_state = campaign.state
-        try:
-            collecting_state = transition(campaign.state, CampaignEvent.MESSAGE_RECEIVED)
-        except InvalidTransitionError:
-            raise
+        campaign = await self.repository.lock_campaign(campaign_id)
+        if campaign is None:
+            raise CampaignNotFoundError(campaign_id)
+        previous_state = CampaignState(campaign.state)
+        collecting_state = transition(previous_state, CampaignEvent.MESSAGE_RECEIVED)
+        await self.repository.append_message(
+            campaign_id=campaign_id,
+            role="user",
+            content=content,
+            payload=None,
+            idempotency_key=idempotency_key,
+        )
+        campaign.state = collecting_state.value
+        self.repository.add_transition(
+            campaign_id=campaign_id,
+            from_state=previous_state.value,
+            to_state=collecting_state.value,
+            event=CampaignEvent.MESSAGE_RECEIVED.value,
+        )
+        # 先提交用户消息并释放行锁，避免 LLM 执行期间长期占用数据库连接和锁。
+        await self.repository.session.commit()
 
-        # 先保存用户原话，再调用外部 Agent；即使 Gateway 暂时失败，用户输入也不会丢失。
-        campaign.messages.append({"role": "user", "content": content})
-        campaign.state = collecting_state
+        request_id = f"{campaign_id}:{idempotency_key}"
         try:
             result = await self.hermes.run_context_intake(
                 ContextIntakeRequest(
-                    campaign_id=str(campaign_id),
-                    request_id=f"{campaign_id}:{idempotency_key}",
-                    message=content,
+                    campaign_id=str(campaign_id), request_id=request_id, message=content
                 )
             )
         except Exception as error:
-            # 外部调用失败不能让活动永久卡在“采集中”；保留原话，恢复到调用前状态供重试。
-            campaign.state = previous_state
-            # API 对外保持稳定的 503，但服务端日志必须保留原始异常与堆栈，
-            # 否则 Gateway、Skill、模型输出和结构校验错误都会被同一条消息掩盖。
+            await self.repository.session.rollback()
+            failed_campaign = await self.repository.lock_campaign(campaign_id)
+            if failed_campaign is not None:
+                failed_campaign.state = previous_state.value
+                self.repository.add_transition(
+                    campaign_id=campaign_id,
+                    from_state=collecting_state.value,
+                    to_state=previous_state.value,
+                    event="HERMES_FAILED",
+                )
+                self.repository.add_execution(
+                    campaign_id=campaign_id,
+                    request_id=request_id,
+                    skill="marketing-context-intake",
+                    stored_session_id=failed_campaign.hermes_stored_session_id,
+                    status="FAILED",
+                    input_payload={"message": content},
+                    error=str(error),
+                )
+                await self.repository.session.commit()
             logger.exception(
                 "Hermes context intake failed: campaign_id=%s request_id=%s",
                 campaign_id,
-                f"{campaign_id}:{idempotency_key}",
+                request_id,
             )
             raise ExternalServiceError("Hermes Gateway is temporarily unavailable") from error
-        campaign.state = transition(campaign.state, map_context_result(result))
-        campaign.context = result.model_dump(mode="json")
-        campaign.messages.append(
-            {"role": "assistant", "content": result.next_action, "payload": campaign.context}
+
+        completed_campaign = await self.repository.lock_campaign(campaign_id)
+        if completed_campaign is None:
+            raise CampaignNotFoundError(campaign_id)
+        result_event = map_context_result(result)
+        completed_state = transition(collecting_state, result_event)
+        payload = result.model_dump(mode="json")
+        completed_campaign.state = completed_state.value
+        completed_campaign.context = payload
+        await self.repository.append_message(
+            campaign_id=campaign_id,
+            role="assistant",
+            content=result.next_question or result.next_action,
+            payload=payload,
+            idempotency_key=f"assistant:{idempotency_key}",
+        )
+        self.repository.add_transition(
+            campaign_id=campaign_id,
+            from_state=collecting_state.value,
+            to_state=completed_state.value,
+            event=result_event.value,
+        )
+        self.repository.add_execution(
+            campaign_id=campaign_id,
+            request_id=request_id,
+            skill="marketing-context-intake",
+            stored_session_id=completed_campaign.hermes_stored_session_id,
+            status="SUCCEEDED",
+            input_payload={"message": content},
+            output_payload=payload,
         )
         response = {
-            "campaign_id": str(campaign.id),
-            "campaign_state": campaign.state,
-            "result": campaign.context,
+            "campaign_id": str(campaign_id),
+            "campaign_state": completed_state.value,
+            "result": payload,
         }
-        self.idempotent_responses[cache_key] = response
+        await self.repository.save_idempotency(
+            scope=scope, key=idempotency_key, response=response
+        )
+        await self.repository.session.commit()
         return response
-
