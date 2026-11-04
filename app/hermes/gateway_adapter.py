@@ -50,10 +50,12 @@ class HermesGatewayAdapter:
                     input_id=request.request_id,
                     text=self._prompt(request, recovering=recovering),
                     finite=True,
-                    unattended=True,
                 )
             except GatewayRPCError as error:
-                if str(error) == "invalid_params":
+                # Gateway 使用 admission_conflict 表示同一个 input_id 被不同请求内容复用。
+                # invalid_params 还可能表示 unattended 等 RPC 参数不适用于恢复后的会话，
+                # 因此不能把所有 invalid_params 都误报为请求 ID 冲突。
+                if str(error) == "admission_conflict":
                     raise HermesRequestConflictError(
                         "Hermes request ID was already used with different parameters"
                     ) from error
