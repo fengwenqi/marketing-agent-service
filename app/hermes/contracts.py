@@ -19,6 +19,7 @@ class FieldSource(BaseModel):
 
     status: Literal[
         "user_provided",
+        "plugin_mapping",
         "retrieved_product_spec",
         "retrieved_marketing_material",
         "user_confirmed",
@@ -27,6 +28,11 @@ class FieldSource(BaseModel):
         "conflict",
     ]
     source: str | None = None
+    # Hermes 会同时返回该字段当前采用的值，方便前端解释结构化上下文的来源。
+    # 值可能是字符串、数字、列表或对象，因此这里保留 JSON 兼容的开放类型。
+    value: Any | None = None
+    # 对缺失、冲突或来源选择的简短说明；与 source 的来源标识职责不同。
+    note: str | None = None
 
 
 class MarketingContextResult(BaseModel):
@@ -51,6 +57,21 @@ class MarketingContextResult(BaseModel):
     next_action: str = Field(min_length=1)
     next_question: str | None = None
     persistence: PersistenceResult
+
+    @field_validator("missing_required", "missing_optional", mode="before")
+    @classmethod
+    def normalize_missing_fields(cls, value: Any) -> Any:
+        """兼容模型偶尔返回的 {field, reason}，对外仍保持字符串数组契约。"""
+
+        if not isinstance(value, list):
+            return value
+        normalized: list[Any] = []
+        for item in value:
+            if isinstance(item, dict) and isinstance(item.get("field"), str):
+                normalized.append(item["field"])
+            else:
+                normalized.append(item)
+        return normalized
 
     @field_validator("field_sources", mode="before")
     @classmethod

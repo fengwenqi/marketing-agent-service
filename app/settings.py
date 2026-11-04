@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     )
     hermes_profile: str = "marketing-agent"
     hermes_workspace: Path = Path(r"D:\my-project\AI\Hermes")
+    # 复杂 Skill 可能包含多轮检索；需覆盖模型限流重试和工具调用时间。
+    hermes_turn_timeout_seconds: int = 600
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

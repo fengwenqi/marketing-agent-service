@@ -28,6 +28,7 @@ $env:HERMES_HOME = 'D:\my-project\AI\Hermes\data\profiles\marketing-agent'
 
 ```powershell
 docker desktop start
+hermes -p marketing-agent gateway stop
 hermes -p marketing-agent gateway ensure
 hermes -p marketing-agent gateway status
 cd D:\my-project\AI\Hermes\marketing-agent-service
@@ -59,6 +60,8 @@ Hermes Gateway 独立服务端进程
 活动第一次对话调用 `session.create`，并把 Gateway 返回的 `stored_session_id` 写入 PostgreSQL；后续对话调用 `session.resume` 恢复同一 Agent 会话。运行期 `session_id` 只在当前 Gateway 进程中有效，不能当成持久化会话 ID。若 Hermes 的 `state.db` 中已找不到原会话，适配器会创建替代会话，并使用 PostgreSQL 保存的结构化活动上下文和最近消息恢复对话。
 
 如果 Gateway 尚未运行，`connect_gateway()` 默认会通过 `ensure_gateway_runtime()` 尝试启动临时 Gateway。FastAPI 业务层只依赖 `HermesPort`，具体的 Gateway 通信集中封装在 `HermesGatewayAdapter` 中，便于以后替换传输实现而不修改活动状态机和业务服务。
+
+单轮 Agent 等待时间由 `.env` 中的 `HERMES_TURN_TIMEOUT_SECONDS` 控制，开发环境默认 600 秒。该值应覆盖模型限流重试和 RAGFlow 检索耗时；它只限制 FastAPI 等待时间，不会加快模型本身。
 
 ## PostgreSQL 与 Alembic
 

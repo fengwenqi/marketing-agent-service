@@ -16,7 +16,11 @@ from app.campaigns.service import (
     CampaignNotFoundError,
     CampaignService,
     ExternalServiceError,
+    HermesExecutionTimeoutError,
+    HermesIdempotencyConflictError,
     IdempotencyConflictError,
+    InvalidHermesOutputError,
+    PreviousHermesRequestFailedError,
 )
 from app.campaigns.state_machine import InvalidTransitionError
 from app.database import get_session
@@ -78,6 +82,35 @@ async def submit_message(
         raise HTTPException(status_code=409, detail=str(error)) from error
     except IdempotencyConflictError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
+    except InvalidHermesOutputError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    except PreviousHermesRequestFailedError as error:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "HERMES_REQUEST_ALREADY_FAILED",
+                "message": str(error),
+                "next_action": "RESEND_MESSAGE_WITH_NEW_REQUEST_ID",
+            },
+        ) from error
+    except HermesIdempotencyConflictError as error:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "HERMES_IDEMPOTENCY_CONFLICT",
+                "message": str(error),
+                "next_action": "RESEND_MESSAGE_WITH_NEW_REQUEST_ID",
+            },
+        ) from error
+    except HermesExecutionTimeoutError as error:
+        raise HTTPException(
+            status_code=504,
+            detail={
+                "code": "HERMES_EXECUTION_TIMEOUT",
+                "message": str(error),
+                "next_action": "RESEND_MESSAGE_WITH_NEW_REQUEST_ID",
+            },
+        ) from error
     except ExternalServiceError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
     return ContextIntakeView.model_validate(result)

@@ -4,8 +4,17 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
 from app.hermes.contracts import MarketingContextResult
-from app.hermes.ports import ContextIntakeRequest, ContextIntakeResponse
+from app.hermes.ports import (
+    ContextIntakeRequest,
+    ContextIntakeResponse,
+    HermesOutputValidationError,
+    HermesRequestConflictError,
+    HermesRequestPreviouslyFailedError,
+    HermesTurnTimeoutError,
+)
 
 
 class HermesGatewayError(RuntimeError):
@@ -15,30 +24,58 @@ class HermesGatewayError(RuntimeError):
 class HermesGatewayAdapter:
     """把 Hermes 的内部客户端封装在边界内，业务层只依赖 HermesPort。"""
 
-    def __init__(self, hermes_source: Path, workspace: Path) -> None:
+    def __init__(
+        self,
+        hermes_source: Path,
+        workspace: Path,
+        turn_timeout_seconds: int = 600,
+    ) -> None:
         self.hermes_source = hermes_source
         self.workspace = workspace
+        self.turn_timeout_seconds = turn_timeout_seconds
 
     async def run_context_intake(self, request: ContextIntakeRequest) -> ContextIntakeResponse:
         # Hermes 目前没有稳定的独立 Python SDK，因此只在此处延迟导入其客户端。
         source = str(self.hermes_source)
         if source not in sys.path:
             sys.path.insert(0, source)
-        from hermes_cli.gateway_client import connect_gateway
+        from hermes_cli.gateway_client import GatewayRPCError, connect_gateway
 
         async with connect_gateway() as client:
             session_id, stored_session_id, recovering = await self._open_session(client, request)
-            receipt = await client.rpc(
-                "prompt.submit",
-                session_id=session_id,
-                input_id=request.request_id,
-                text=self._prompt(request, recovering=recovering),
-                finite=True,
-                unattended=True,
-            )
+            try:
+                receipt = await client.rpc(
+                    "prompt.submit",
+                    session_id=session_id,
+                    input_id=request.request_id,
+                    text=self._prompt(request, recovering=recovering),
+                    finite=True,
+                    unattended=True,
+                )
+            except GatewayRPCError as error:
+                if str(error) == "invalid_params":
+                    raise HermesRequestConflictError(
+                        "Hermes request ID was already used with different parameters"
+                    ) from error
+                raise
             admission_id = receipt.get("admission_id")
-            text = await self._wait_for_completion(client, session_id, admission_id)
-            result = MarketingContextResult.model_validate(self._decode_json(text))
+            if not admission_id:
+                raise HermesGatewayError("Gateway prompt.submit returned no admission_id")
+
+            # input_id 是 Gateway 的持久化幂等键。重复提交时，Gateway 会返回原 admission，
+            # 但不会重新广播已经结束的 WebSocket 事件，因此必须先读持久化 receipt。
+            durable_receipt = await self._get_receipt(client, session_id, admission_id)
+            terminal_text = self._terminal_receipt_text(durable_receipt)
+            if terminal_text is not None:
+                text = terminal_text
+            else:
+                text = await self._wait_for_completion(client, session_id, admission_id)
+            try:
+                result = MarketingContextResult.model_validate(self._decode_json(text))
+            except ValidationError as error:
+                raise HermesOutputValidationError(
+                    "Hermes returned JSON that does not match MarketingContextResult"
+                ) from error
             return ContextIntakeResponse(result=result, stored_session_id=stored_session_id)
 
     async def _open_session(
@@ -84,8 +121,11 @@ class HermesGatewayAdapter:
     @staticmethod
     def _prompt(request: ContextIntakeRequest, *, recovering: bool) -> str:
         base = (
-            "请执行 marketing-context-intake。最终只输出符合该 Skill 模板的 JSON，"
-            "不要使用 Markdown 代码块。"
+            "请执行 marketing-context-intake。识别并唯一映射产品后，直接调用 "
+            "search_product_spec 和 search_marketing_material；每次调用必须传入非空的 "
+            "product_key 和 question，禁止通过 tool_call 桥接。最终响应只能包含符合该 Skill 模板的 JSON 对象，"
+            "不要输出分析、摘要、前导说明或 Markdown 代码块；"
+            "响应的第一个非空字符必须是 {，最后一个非空字符必须是 }。"
         )
         if not recovering:
             return base + "用户输入：\n" + request.message
@@ -102,31 +142,76 @@ class HermesGatewayAdapter:
             + request.message
         )
 
-    @staticmethod
-    async def _wait_for_completion(client: Any, session_id: str, admission_id: str | None) -> str:
+    async def _wait_for_completion(
+        self, client: Any, session_id: str, admission_id: str
+    ) -> str:
         # Gateway 会通过 message.delta 流式发送正文。message.complete 主要表示本轮结束，
         # 其中的 text 在部分响应路径下可能为空，因此必须保留本轮的增量文本作为回退。
         streamed_chunks: list[str] = []
-        async with asyncio.timeout(300):
-            while True:
-                event = await client.events.get()
-                if isinstance(event, Exception):
-                    raise HermesGatewayError(str(event)) from event
-                params = event.get("params", {})
-                if params.get("session_id") != session_id:
-                    continue
-                event_admission = params.get("admission_id") or params.get("payload", {}).get(
-                    "admission_id"
-                )
-                if admission_id and event_admission != admission_id:
-                    continue
-                event_type = params.get("type")
-                payload = params.get("payload", {})
-                completed_text = HermesGatewayAdapter._consume_turn_event(
-                    event_type, payload, streamed_chunks
-                )
-                if completed_text is not None:
-                    return completed_text
+        try:
+            async with asyncio.timeout(self.turn_timeout_seconds):
+                while True:
+                    try:
+                        # WebSocket 是实时快路径；定时轮询 receipt 是持久化回退路径，
+                        # 可处理重复提交以及完成事件恰好在监听前到达的情况。
+                        event = await asyncio.wait_for(client.events.get(), timeout=2)
+                    except TimeoutError:
+                        receipt = await self._get_receipt(client, session_id, admission_id)
+                        terminal_text = self._terminal_receipt_text(receipt)
+                        if terminal_text is not None:
+                            return terminal_text
+                        continue
+                    if isinstance(event, Exception):
+                        raise HermesGatewayError(str(event)) from event
+                    params = event.get("params", {})
+                    if params.get("session_id") != session_id:
+                        continue
+                    event_admission = params.get("admission_id") or params.get("payload", {}).get(
+                        "admission_id"
+                    )
+                    if admission_id and event_admission != admission_id:
+                        continue
+                    event_type = params.get("type")
+                    payload = params.get("payload", {})
+                    completed_text = HermesGatewayAdapter._consume_turn_event(
+                        event_type, payload, streamed_chunks
+                    )
+                    if completed_text is not None:
+                        return completed_text
+        except TimeoutError as error:
+            raise HermesTurnTimeoutError(
+                f"Hermes did not finish within {self.turn_timeout_seconds} seconds"
+            ) from error
+
+    @staticmethod
+    async def _get_receipt(
+        client: Any, session_id: str, admission_id: str
+    ) -> dict[str, Any]:
+        return await client.rpc(
+            "prompt.receipt",
+            session_id=session_id,
+            admission_id=admission_id,
+            include_result=True,
+        )
+
+    @staticmethod
+    def _terminal_receipt_text(receipt: dict[str, Any]) -> str | None:
+        if receipt.get("status") != "terminal":
+            return None
+
+        outcome = receipt.get("outcome")
+        result = receipt.get("result")
+        if outcome == "completed":
+            text = result.get("final_response") if isinstance(result, dict) else None
+            if isinstance(text, str) and text:
+                return text
+            raise HermesGatewayError("Hermes completed without a persisted response")
+
+        detail = result.get("error") if isinstance(result, dict) else None
+        suffix = f": {detail}" if detail else ""
+        raise HermesRequestPreviouslyFailedError(
+            f"Hermes request already ended with outcome {outcome or 'failed'}{suffix}"
+        )
 
     @staticmethod
     def _consume_turn_event(
@@ -154,14 +239,34 @@ class HermesGatewayAdapter:
 
     @staticmethod
     def _decode_json(text: str) -> dict[str, Any]:
+        stripped = text.strip()
         try:
-            value = json.loads(text)
-        except json.JSONDecodeError as error:
-            preview = text.strip().replace("\n", " ")[:200]
-            raise HermesGatewayError(
+            value = json.loads(stripped)
+        except json.JSONDecodeError as strict_error:
+            # 模型偶尔会在合法 JSON 前后附加解释文字或 Markdown 围栏。
+            # 从每个 “{” 起点尝试 raw_decode；首个可完整解码的对象再由 Pydantic
+            # 执行业务字段白名单校验，不能因为容错而绕过结构契约。
+            decoder = json.JSONDecoder()
+            search_from = 0
+            while True:
+                object_start = stripped.find("{", search_from)
+                if object_start < 0:
+                    break
+                try:
+                    candidate, _ = decoder.raw_decode(stripped, object_start)
+                except json.JSONDecodeError:
+                    search_from = object_start + 1
+                    continue
+                if isinstance(candidate, dict):
+                    return candidate
+                search_from = object_start + 1
+
+            preview = stripped.replace("\n", " ")[:200]
+            raise HermesOutputValidationError(
                 f"Hermes returned invalid JSON (response preview: {preview!r})"
-            ) from error
+            ) from strict_error
+
         if not isinstance(value, dict):
-            raise HermesGatewayError("Hermes result must be a JSON object")
+            raise HermesOutputValidationError("Hermes result must be a JSON object")
         return value
 

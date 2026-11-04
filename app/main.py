@@ -18,6 +18,7 @@ def create_app(*, hermes: HermesPort | None = None) -> FastAPI:
         hermes = HermesGatewayAdapter(
             hermes_source=settings.hermes_workspace / "hermes-agent",
             workspace=settings.hermes_workspace,
+            turn_timeout_seconds=settings.hermes_turn_timeout_seconds,
         )
     # Hermes 客户端配置属于进程级依赖；数据库 Session 则由每个 HTTP 请求单独创建。
     app.state.hermes = hermes

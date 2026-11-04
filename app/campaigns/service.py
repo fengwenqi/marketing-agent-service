@@ -4,7 +4,14 @@ from uuid import UUID, uuid4
 from app.campaigns.domain import CampaignEvent, CampaignState
 from app.campaigns.repository import CampaignRepository
 from app.campaigns.state_machine import transition
-from app.hermes.ports import ContextIntakeRequest, HermesPort
+from app.hermes.ports import (
+    ContextIntakeRequest,
+    HermesOutputValidationError,
+    HermesPort,
+    HermesRequestConflictError,
+    HermesRequestPreviouslyFailedError,
+    HermesTurnTimeoutError,
+)
 from app.hermes.result_mapper import map_context_result
 from app.models.business import Campaign, ConversationMessage
 
@@ -19,7 +26,23 @@ class ExternalServiceError(RuntimeError):
     pass
 
 
+class InvalidHermesOutputError(RuntimeError):
+    pass
+
+
 class IdempotencyConflictError(ValueError):
+    pass
+
+
+class PreviousHermesRequestFailedError(RuntimeError):
+    pass
+
+
+class HermesExecutionTimeoutError(RuntimeError):
+    pass
+
+
+class HermesIdempotencyConflictError(RuntimeError):
     pass
 
 
@@ -139,6 +162,22 @@ class CampaignService:
                 campaign_id,
                 request_id,
             )
+            if isinstance(error, HermesOutputValidationError):
+                raise InvalidHermesOutputError(
+                    "Hermes returned an invalid marketing context structure"
+                ) from error
+            if isinstance(error, HermesRequestPreviouslyFailedError):
+                raise PreviousHermesRequestFailedError(
+                    "该请求之前已经执行失败，请重新发送消息以创建新的请求。"
+                ) from error
+            if isinstance(error, HermesRequestConflictError):
+                raise HermesIdempotencyConflictError(
+                    "该请求 ID 已经使用，并且本次请求参数与原请求不一致，请使用新的请求 ID 重新发送。"
+                ) from error
+            if isinstance(error, HermesTurnTimeoutError):
+                raise HermesExecutionTimeoutError(
+                    "Hermes 正在执行任务，但未在规定时间内完成，请稍后重新发送消息。"
+                ) from error
             raise ExternalServiceError("Hermes Gateway is temporarily unavailable") from error
 
         completed_campaign = await self.repository.lock_campaign(campaign_id)

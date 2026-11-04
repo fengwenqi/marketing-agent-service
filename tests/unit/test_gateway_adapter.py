@@ -1,6 +1,14 @@
+from pathlib import Path
+
 import pytest
 
 from app.hermes.gateway_adapter import HermesGatewayAdapter, HermesGatewayError
+
+
+def test_turn_timeout_is_configurable() -> None:
+    adapter = HermesGatewayAdapter(Path("hermes-source"), Path("workspace"), 720)
+
+    assert adapter.turn_timeout_seconds == 720
 
 
 def test_completion_uses_streamed_text_when_completion_is_empty() -> None:
