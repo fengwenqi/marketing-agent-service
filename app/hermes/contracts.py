@@ -1,6 +1,6 @@
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class PersistenceResult(BaseModel):
@@ -86,4 +86,105 @@ class MarketingContextResult(BaseModel):
             else source
             for field_name, source in value.items()
         }
+
+
+class StrategyMaterialPlan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target_count_min: int = Field(ge=1)
+    target_count_max: int = Field(ge=1)
+    oral_video_count: int = Field(ge=0)
+    short_video_count: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_range(self) -> "StrategyMaterialPlan":
+        if self.target_count_min > self.target_count_max:
+            raise ValueError("material count minimum cannot exceed maximum")
+        return self
+
+
+class StrategyDelivery(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    budget_ratio: int = Field(ge=0, le=100)
+    channel: Literal["douyin"]
+    launch_form: Literal["qianchuan_universal_live_room"]
+    bidding: str = Field(min_length=1)
+    targeting: str = Field(min_length=1)
+
+
+class StrategyContentBrief(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    stage: Literal["A", "B", "C"]
+    communication_theme: str = Field(min_length=1)
+    target_audience: list[str] = Field(min_length=1)
+    core_selling_points: list[str] = Field(min_length=1)
+    content_focus: str = Field(min_length=1)
+    content_directions: list[str] = Field(min_length=1)
+    channel: Literal["douyin"]
+    launch_object: Literal["live_room"]
+    bidding: str = Field(min_length=1)
+    material_package: str = Field(min_length=1)
+    stage_inputs: list[str] = Field(min_length=1)
+    execution_progression: str = Field(min_length=1)
+    conversion_path: list[str] = Field(min_length=1)
+    rhythm: str = Field(min_length=1)
+    core_metrics: list[str] = Field(min_length=1)
+
+
+class MarketingStageStrategy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    code: Literal["A", "B", "C"]
+    name: str = Field(min_length=1)
+    objective: str = Field(min_length=1)
+    lifecycle: str = Field(min_length=1)
+    tagline: str = Field(min_length=1)
+    communication_theme: str = Field(min_length=1)
+    target_audience: list[str] = Field(min_length=1)
+    core_selling_points: list[str] = Field(min_length=1)
+    content_directions: list[str] = Field(min_length=1)
+    material_plan: StrategyMaterialPlan
+    delivery: StrategyDelivery
+    success_criteria: list[str] = Field(min_length=1)
+    next_stage_inputs: list[str]
+    content_brief: StrategyContentBrief
+
+
+class MarketingStrategyResult(BaseModel):
+    """Hermes 策略 Skill 的严格白名单输出。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["1.0"]
+    framework_summary: str = Field(min_length=1)
+    rationale: str = Field(min_length=1)
+    stages: list[MarketingStageStrategy] = Field(min_length=3, max_length=3)
+
+    @model_validator(mode="after")
+    def validate_abc_framework(self) -> "MarketingStrategyResult":
+        if [stage.code for stage in self.stages] != ["A", "B", "C"]:
+            raise ValueError("strategy stages must be ordered A, B, C")
+
+        expected = {
+            "A": ("起量赛马", 50, 15, 15, 9, 6),
+            "B": ("收敛优化", 30, 5, 5, 3, 2),
+            "C": ("集中收口", 20, 1, 2, 1, 1),
+        }
+        for stage in self.stages:
+            name, ratio, count_min, count_max, oral, short = expected[stage.code]
+            actual = (
+                stage.name,
+                stage.delivery.budget_ratio,
+                stage.material_plan.target_count_min,
+                stage.material_plan.target_count_max,
+                stage.material_plan.oral_video_count,
+                stage.material_plan.short_video_count,
+            )
+            if actual != (name, ratio, count_min, count_max, oral, short):
+                raise ValueError(f"stage {stage.code} does not match the fixed framework")
+            if stage.content_brief.stage != stage.code:
+                raise ValueError("content brief stage must match strategy stage")
+        return self
 
