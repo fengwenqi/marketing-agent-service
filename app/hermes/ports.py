@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from app.hermes.contracts import MarketingContextResult
+from app.hermes.contracts import MarketingContextResult, MarketingStrategyResult
 
 
 class HermesOutputValidationError(RuntimeError):
@@ -44,6 +44,26 @@ class ContextIntakeResponse:
     stored_session_id: str
 
 
+@dataclass(frozen=True)
+class StrategyGenerationRequest:
+    campaign_id: str
+    request_id: str
+    marketing_context: dict[str, Any]
+    stored_session_id: str | None = None
+    current_strategy: dict[str, Any] | None = None
+    revision_instruction: str | None = None
+
+
+@dataclass(frozen=True)
+class StrategyGenerationResponse:
+    result: MarketingStrategyResult
+    stored_session_id: str
+
+
 class HermesPort(Protocol):
     async def run_context_intake(self, request: ContextIntakeRequest) -> ContextIntakeResponse: ...
+
+    async def run_strategy_generation(
+        self, request: StrategyGenerationRequest
+    ) -> StrategyGenerationResponse: ...
 

@@ -6,7 +6,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from app.hermes.contracts import MarketingContextResult
+from app.hermes.contracts import MarketingContextResult, MarketingStrategyResult
 from app.hermes.ports import (
     ContextIntakeRequest,
     ContextIntakeResponse,
@@ -14,6 +14,8 @@ from app.hermes.ports import (
     HermesRequestConflictError,
     HermesRequestPreviouslyFailedError,
     HermesTurnTimeoutError,
+    StrategyGenerationRequest,
+    StrategyGenerationResponse,
 )
 
 
@@ -39,39 +41,16 @@ class HermesGatewayAdapter:
         source = str(self.hermes_source)
         if source not in sys.path:
             sys.path.insert(0, source)
-        from hermes_cli.gateway_client import GatewayRPCError, connect_gateway
+        from hermes_cli.gateway_client import connect_gateway
 
         async with connect_gateway() as client:
             session_id, stored_session_id, recovering = await self._open_session(client, request)
-            try:
-                receipt = await client.rpc(
-                    "prompt.submit",
-                    session_id=session_id,
-                    input_id=request.request_id,
-                    text=self._prompt(request, recovering=recovering),
-                    finite=True,
-                )
-            except GatewayRPCError as error:
-                # Gateway 使用 admission_conflict 表示同一个 input_id 被不同请求内容复用。
-                # invalid_params 还可能表示 unattended 等 RPC 参数不适用于恢复后的会话，
-                # 因此不能把所有 invalid_params 都误报为请求 ID 冲突。
-                if str(error) == "admission_conflict":
-                    raise HermesRequestConflictError(
-                        "Hermes request ID was already used with different parameters"
-                    ) from error
-                raise
-            admission_id = receipt.get("admission_id")
-            if not admission_id:
-                raise HermesGatewayError("Gateway prompt.submit returned no admission_id")
-
-            # input_id 是 Gateway 的持久化幂等键。重复提交时，Gateway 会返回原 admission，
-            # 但不会重新广播已经结束的 WebSocket 事件，因此必须先读持久化 receipt。
-            durable_receipt = await self._get_receipt(client, session_id, admission_id)
-            terminal_text = self._terminal_receipt_text(durable_receipt)
-            if terminal_text is not None:
-                text = terminal_text
-            else:
-                text = await self._wait_for_completion(client, session_id, admission_id)
+            text = await self._submit_and_wait(
+                client,
+                session_id=session_id,
+                request_id=request.request_id,
+                prompt=self._prompt(request, recovering=recovering),
+            )
             try:
                 result = MarketingContextResult.model_validate(self._decode_json(text))
             except ValidationError as error:
@@ -79,6 +58,62 @@ class HermesGatewayAdapter:
                     "Hermes returned JSON that does not match MarketingContextResult"
                 ) from error
             return ContextIntakeResponse(result=result, stored_session_id=stored_session_id)
+
+    async def run_strategy_generation(
+        self, request: StrategyGenerationRequest
+    ) -> StrategyGenerationResponse:
+        source = str(self.hermes_source)
+        if source not in sys.path:
+            sys.path.insert(0, source)
+        from hermes_cli.gateway_client import connect_gateway
+
+        async with connect_gateway() as client:
+            session_id, stored_session_id, _ = await self._open_strategy_session(
+                client, request
+            )
+            text = await self._submit_and_wait(
+                client,
+                session_id=session_id,
+                request_id=request.request_id,
+                prompt=self._strategy_prompt(request),
+            )
+            return StrategyGenerationResponse(
+                result=self._validate_strategy_result(text),
+                stored_session_id=stored_session_id,
+            )
+
+    async def _submit_and_wait(
+        self,
+        client: Any,
+        *,
+        session_id: str,
+        request_id: str,
+        prompt: str,
+    ) -> str:
+        from hermes_cli.gateway_client import GatewayRPCError
+
+        try:
+            receipt = await client.rpc(
+                "prompt.submit",
+                session_id=session_id,
+                input_id=request_id,
+                text=prompt,
+                finite=True,
+            )
+        except GatewayRPCError as error:
+            if str(error) == "admission_conflict":
+                raise HermesRequestConflictError(
+                    "Hermes request ID was already used with different parameters"
+                ) from error
+            raise
+        admission_id = receipt.get("admission_id")
+        if not admission_id:
+            raise HermesGatewayError("Gateway prompt.submit returned no admission_id")
+        durable_receipt = await self._get_receipt(client, session_id, admission_id)
+        terminal_text = self._terminal_receipt_text(durable_receipt)
+        if terminal_text is not None:
+            return terminal_text
+        return await self._wait_for_completion(client, session_id, admission_id)
 
     async def _open_session(
         self, client: Any, request: ContextIntakeRequest
@@ -120,6 +155,41 @@ class HermesGatewayAdapter:
         runtime_id = snapshot["session_id"]
         return runtime_id, snapshot.get("stored_session_id") or runtime_id
 
+    async def _open_strategy_session(
+        self, client: Any, request: StrategyGenerationRequest
+    ) -> tuple[str, str, bool]:
+        if request.stored_session_id:
+            try:
+                snapshot = await client.rpc(
+                    "session.resume",
+                    session_id=request.stored_session_id,
+                    source="tool",
+                )
+                return (
+                    snapshot["session_id"],
+                    snapshot.get("stored_session_id") or request.stored_session_id,
+                    False,
+                )
+            except Exception as error:
+                if str(error) not in {"not_found", "session_not_found"}:
+                    raise
+        description = await client.rpc("runtime.describe")
+        parameters = description.get("session_create", {}).get("parameters", [])
+        if "skills" not in parameters:
+            raise HermesGatewayError("Gateway session.create does not support skills")
+        snapshot = await client.rpc(
+            "session.create",
+            request_id=request.request_id,
+            source="tool",
+            cwd=str(self.workspace),
+            skills=["marketing-strategy"],
+        )
+        return (
+            snapshot["session_id"],
+            snapshot.get("stored_session_id") or snapshot["session_id"],
+            bool(request.stored_session_id),
+        )
+
     @staticmethod
     def _prompt(request: ContextIntakeRequest, *, recovering: bool) -> str:
         base = (
@@ -143,6 +213,29 @@ class HermesGatewayAdapter:
             + "\n本次用户输入：\n"
             + request.message
         )
+
+    @staticmethod
+    def _strategy_prompt(request: StrategyGenerationRequest) -> str:
+        payload = {
+            "marketing_context": request.marketing_context,
+            "current_strategy": request.current_strategy,
+            "revision_instruction": request.revision_instruction,
+        }
+        return (
+            "请执行 marketing-strategy。严格根据输入生成完整 A/B/C 三阶段框架；"
+            "修改模式也必须返回完整框架。最终只能输出符合 Skill 模板的 JSON 对象，"
+            "不要输出分析、说明或 Markdown 代码块。\n输入：\n"
+            + json.dumps(payload, ensure_ascii=False)
+        )
+
+    @classmethod
+    def _validate_strategy_result(cls, text: str) -> MarketingStrategyResult:
+        try:
+            return MarketingStrategyResult.model_validate(cls._decode_json(text))
+        except ValidationError as error:
+            raise HermesOutputValidationError(
+                "Hermes returned JSON that does not match MarketingStrategyResult"
+            ) from error
 
     async def _wait_for_completion(
         self, client: Any, session_id: str, admission_id: str
