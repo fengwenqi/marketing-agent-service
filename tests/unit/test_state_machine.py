@@ -33,6 +33,16 @@ from app.campaigns.state_machine import InvalidTransitionError, transition
             CampaignEvent.STRATEGY_CREATED,
             CampaignState.STRATEGY_PENDING_CONFIRMATION,
         ),
+        (
+            CampaignState.STRATEGY_PENDING_CONFIRMATION,
+            CampaignEvent.STRATEGY_REVISION_REQUESTED,
+            CampaignState.STRATEGY_GENERATING,
+        ),
+        (
+            CampaignState.STRATEGY_PENDING_CONFIRMATION,
+            CampaignEvent.STRATEGY_CONFIRMED,
+            CampaignState.STRATEGY_CONFIRMED,
+        ),
     ],
 )
 def test_transition_accepts_first_slice_paths(current, event, expected) -> None:

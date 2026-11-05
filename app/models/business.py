@@ -57,6 +57,56 @@ class GateDecision(TimestampMixin, Base):
     reason: Mapped[str | None] = mapped_column(Text)
     actor_id: Mapped[str] = mapped_column(String(100))
     decision_version: Mapped[int] = mapped_column(default=1)
+    # Gate 可审核不同领域对象；不设置通用外键，由应用层验证资源归属。
+    resource_type: Mapped[str | None] = mapped_column(String(64))
+    resource_id: Mapped[uuid.UUID | None] = mapped_column()
+    resource_version_id: Mapped[uuid.UUID | None] = mapped_column()
+
+
+class MarketingStrategyFramework(TimestampMixin, Base):
+    __tablename__ = "marketing_strategy_frameworks"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    campaign_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("campaigns.id"), unique=True, index=True
+    )
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    current_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey(
+            "marketing_strategy_versions.id",
+            name="fk_strategy_framework_current_version",
+            use_alter=True,
+        )
+    )
+    confirmed_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey(
+            "marketing_strategy_versions.id",
+            name="fk_strategy_framework_confirmed_version",
+            use_alter=True,
+        )
+    )
+    hermes_stored_session_id: Mapped[str | None] = mapped_column(String(128))
+
+
+class MarketingStrategyVersion(TimestampMixin, Base):
+    __tablename__ = "marketing_strategy_versions"
+    __table_args__ = (
+        UniqueConstraint(
+            "framework_id", "version", name="uq_strategy_framework_version"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    framework_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("marketing_strategy_frameworks.id"), index=True
+    )
+    version: Mapped[int] = mapped_column(nullable=False)
+    parent_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("marketing_strategy_versions.id")
+    )
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    revision_instruction: Mapped[str | None] = mapped_column(Text)
+    content: Mapped[dict[str, Any]] = mapped_column(json_type, nullable=False)
 
 
 class HermesExecution(TimestampMixin, Base):

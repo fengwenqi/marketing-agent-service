@@ -27,6 +27,14 @@ _TRANSITIONS: dict[tuple[CampaignState, CampaignEvent], CampaignState] = {
         CampaignState.STRATEGY_GENERATING,
         CampaignEvent.STRATEGY_CREATED,
     ): CampaignState.STRATEGY_PENDING_CONFIRMATION,
+    (
+        CampaignState.STRATEGY_PENDING_CONFIRMATION,
+        CampaignEvent.STRATEGY_REVISION_REQUESTED,
+    ): CampaignState.STRATEGY_GENERATING,
+    (
+        CampaignState.STRATEGY_PENDING_CONFIRMATION,
+        CampaignEvent.STRATEGY_CONFIRMED,
+    ): CampaignState.STRATEGY_CONFIRMED,
 }
 
 
