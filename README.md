@@ -1,6 +1,6 @@
 # Marketing Agent Service
 
-恒智影营销云的 FastAPI 业务服务。当前版本完成活动上下文采集骨架：活动状态机、Gate 模型、结构化 Skill 输出、Hermes Gateway 适配和 PostgreSQL 表结构。
+恒智影营销云的 FastAPI 业务服务。当前版本已完成活动上下文采集，以及从营销目标生成 A/B/C 阶段策略框架、按反馈修订、版本留痕和 Gate1 人工确认。
 
 ## 本地结构
 
@@ -75,6 +75,8 @@ Alembic 管理的是表、字段、索引、外键和唯一约束等数据库结
 - `hermes_executions`
 - `state_transitions`
 - `idempotency_records`
+- `marketing_strategy_frameworks`
+- `marketing_strategy_versions`
 
 PostgreSQL 已是活动业务数据的事实来源。每个 HTTP 请求创建独立的 SQLAlchemy Session，`CampaignService` 通过 `CampaignRepository` 持久化活动、结构化上下文、对话历史、状态流转、Hermes 执行结果和幂等结果。重启 FastAPI 后数据不会丢失，前端可重新读取活动并继续原来的 Hermes 会话。
 
@@ -112,6 +114,22 @@ Password: marketing_agent_dev
 - `GET /api/v1/campaigns/{campaign_id}`
 - `GET /api/v1/campaigns/{campaign_id}/messages`
 - `POST /api/v1/campaigns/{campaign_id}/messages`
+- `POST /api/v1/campaigns/{campaign_id}/strategy-framework/generate`
+- `GET /api/v1/campaigns/{campaign_id}/strategy-framework`
+- `POST /api/v1/campaigns/{campaign_id}/strategy-framework/revise`
+- `POST /api/v1/campaigns/{campaign_id}/strategy-framework/confirm`
+
+策略接口只允许在合法活动状态下调用。首次生成会创建策略 V1；用户提出修改意见时，Hermes 使用同一策略会话和当前完整版本生成一个新的完整版本，旧版本标记为 `SUPERSEDED` 但不会删除。修订请求本身也记录为 Gate1 的 `REVISION_REQUESTED` 决策。确认时前端必须提交当前 `expected_version`，后端把 `APPROVE` 决策绑定到该版本，避免用户在过期页面误确认旧策略。
+
+```text
+CONTEXT_READY
+  → 生成策略 V1
+STRATEGY_PENDING_CONFIRMATION
+  ├─ 提交意见 → V2/V3/... → 继续等待确认
+  └─ Gate1 确认当前版本 → STRATEGY_CONFIRMED
+```
+
+所有策略写接口也要求 `Idempotency-Key`。Hermes 暂时失败时不会覆盖当前有效版本，同一个幂等键可以安全重试；FastAPI 或 Gateway 重启后，策略版本、Gate 决策和 Hermes 的 `stored_session_id` 都可从 PostgreSQL 恢复。
 
 ## 代码阅读建议
 
@@ -119,4 +137,6 @@ Password: marketing_agent_dev
 2. `app/hermes/contracts.py`：如何用 Pydantic 把 LLM 输出变成可信数据。
 3. `app/hermes/gateway_adapter.py`：FastAPI 如何创建指定 Skill 的 Hermes 会话。
 4. `app/campaigns/service.py`：对话、幂等和状态推进如何串起来。
+5. `app/strategies/service.py`：策略生成、修订、失败恢复和 Gate1 确认。
+6. `app/strategies/router.py`：策略 HTTP 接口及 404/409/502/503 错误映射。
 

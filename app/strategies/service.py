@@ -4,7 +4,7 @@ from hashlib import sha256
 from uuid import UUID, uuid4
 
 from app.campaigns.domain import CampaignEvent, CampaignState
-from app.campaigns.state_machine import InvalidTransitionError, transition
+from app.campaigns.state_machine import transition
 from app.hermes.ports import (
     HermesOutputValidationError,
     HermesPort,
@@ -119,6 +119,7 @@ class StrategyService:
             instruction=None,
             idempotency_scope=scope,
             idempotency_key=idempotency_key,
+            actor_id=None,
             failure_state=CampaignState.CONTEXT_READY,
         )
 
@@ -134,9 +135,13 @@ class StrategyService:
         scope = f"strategy-revise:{campaign_id}"
         cached = await self.repository.get_idempotency(scope, idempotency_key)
         if cached:
-            if cached.get("instruction") != instruction:
+            if (
+                cached.get("instruction") != instruction
+                or cached.get("expected_version") != expected_version
+                or cached.get("actor_id") != actor_id
+            ):
                 raise StrategyIdempotencyConflictError(
-                    "Idempotency-Key was used with different revision instruction"
+                    "Idempotency-Key was used with different revision parameters"
                 )
             return await self.get_for_campaign(campaign_id)
 
@@ -153,10 +158,16 @@ class StrategyService:
             )
         prefix = self._execution_prefix(campaign_id, scope, idempotency_key)
         previous_execution = await self.repository.latest_execution(prefix)
-        if previous_execution and previous_execution.input_payload.get("instruction") != instruction:
-            raise StrategyIdempotencyConflictError(
-                "Idempotency-Key was used with different revision instruction"
-            )
+        if previous_execution:
+            previous_input = previous_execution.input_payload
+            if (
+                previous_input.get("instruction") != instruction
+                or previous_input.get("current_version") != expected_version
+                or previous_input.get("actor_id") != actor_id
+            ):
+                raise StrategyIdempotencyConflictError(
+                    "Idempotency-Key was used with different revision parameters"
+                )
 
         previous_state = CampaignState(campaign.state)
         generating_state = transition(
@@ -194,6 +205,7 @@ class StrategyService:
             instruction=instruction,
             idempotency_scope=scope,
             idempotency_key=idempotency_key,
+            actor_id=actor_id,
             failure_state=CampaignState.STRATEGY_PENDING_CONFIRMATION,
         )
 
@@ -207,6 +219,7 @@ class StrategyService:
         instruction: str | None,
         idempotency_scope: str,
         idempotency_key: str,
+        actor_id: str | None,
         failure_state: CampaignState,
     ) -> StrategySnapshot:
         framework = await self.repository.get_framework(campaign_id)
@@ -223,6 +236,7 @@ class StrategyService:
         input_payload = {
             "instruction": instruction,
             "current_version": current_version.version if current_version else None,
+            "actor_id": actor_id,
         }
         try:
             response = await self.hermes.run_strategy_generation(
@@ -318,6 +332,8 @@ class StrategyService:
             response={
                 "version_id": str(version.id),
                 "instruction": instruction,
+                "expected_version": current_version.version if current_version else None,
+                "actor_id": actor_id,
             },
         )
         await self.repository.session.commit()
@@ -334,6 +350,13 @@ class StrategyService:
         scope = f"strategy-confirm:{campaign_id}"
         cached = await self.repository.get_idempotency(scope, idempotency_key)
         if cached:
+            if (
+                cached.get("expected_version") != expected_version
+                or cached.get("actor_id") != actor_id
+            ):
+                raise StrategyIdempotencyConflictError(
+                    "Idempotency-Key was used with different confirmation parameters"
+                )
             return await self.get_for_campaign(campaign_id)
         campaign = await self.repository.lock_campaign(campaign_id)
         framework = await self.repository.get_framework(campaign_id, lock=True)
@@ -370,7 +393,11 @@ class StrategyService:
         self.repository.save_idempotency(
             scope=scope,
             key=idempotency_key,
-            response={"version_id": str(current.id), "actor_id": actor_id},
+            response={
+                "version_id": str(current.id),
+                "expected_version": expected_version,
+                "actor_id": actor_id,
+            },
         )
         await self.repository.session.commit()
         return await self.get_for_campaign(campaign_id)

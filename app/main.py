@@ -4,6 +4,7 @@ from app.campaigns.router import router as campaigns_router
 from app.hermes.gateway_adapter import HermesGatewayAdapter
 from app.hermes.ports import HermesPort
 from app.settings import get_settings
+from app.strategies.router import router as strategies_router
 
 
 def create_app(*, hermes: HermesPort | None = None) -> FastAPI:
@@ -23,6 +24,7 @@ def create_app(*, hermes: HermesPort | None = None) -> FastAPI:
     # Hermes 客户端配置属于进程级依赖；数据库 Session 则由每个 HTTP 请求单独创建。
     app.state.hermes = hermes
     app.include_router(campaigns_router)
+    app.include_router(strategies_router)
 
     @app.get("/health", tags=["system"])
     async def health() -> dict[str, str]:

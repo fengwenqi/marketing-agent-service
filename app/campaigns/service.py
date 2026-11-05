@@ -172,7 +172,8 @@ class CampaignService:
                 ) from error
             if isinstance(error, HermesRequestConflictError):
                 raise HermesIdempotencyConflictError(
-                    "该请求 ID 已经使用，并且本次请求参数与原请求不一致，请使用新的请求 ID 重新发送。"
+                    "该请求 ID 已经使用，并且本次请求参数与原请求不一致，"
+                    "请使用新的请求 ID 重新发送。"
                 ) from error
             if isinstance(error, HermesTurnTimeoutError):
                 raise HermesExecutionTimeoutError(

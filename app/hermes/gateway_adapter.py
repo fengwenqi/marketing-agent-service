@@ -195,7 +195,8 @@ class HermesGatewayAdapter:
         base = (
             "请执行 marketing-context-intake。识别并唯一映射产品后，直接调用 "
             "search_product_spec 和 search_marketing_material；每次调用必须传入非空的 "
-            "product_key 和 question，禁止通过 tool_call 桥接。最终响应只能包含符合该 Skill 模板的 JSON 对象，"
+            "product_key 和 question，禁止通过 tool_call 桥接。最终响应只能包含符合该 Skill "
+            "模板的 JSON 对象，"
             "不要输出分析、摘要、前导说明或 Markdown 代码块；"
             "响应的第一个非空字符必须是 {，最后一个非空字符必须是 }。"
         )
