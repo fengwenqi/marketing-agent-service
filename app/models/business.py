@@ -53,7 +53,7 @@ class GateDecision(TimestampMixin, Base):
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     campaign_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("campaigns.id"), index=True)
     gate_code: Mapped[str] = mapped_column(String(16))
-    decision: Mapped[str] = mapped_column(String(16))
+    decision: Mapped[str] = mapped_column(String(32))
     reason: Mapped[str | None] = mapped_column(Text)
     actor_id: Mapped[str] = mapped_column(String(100))
     decision_version: Mapped[int] = mapped_column(default=1)
