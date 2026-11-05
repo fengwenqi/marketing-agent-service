@@ -15,7 +15,6 @@ htmlcov/
 .worktrees/
 .superpowers/
 
-# Local implementation design records; not required by runtime or deployment.
-docs/superpowers/plans/2026-11-05-strategy-framework-gate1.md
-docs/superpowers/specs/2026-11-05-strategy-framework-gate1-design.md
+# Local design and implementation notes; not required by runtime or deployment.
+docs/
 
