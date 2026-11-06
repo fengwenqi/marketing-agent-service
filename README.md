@@ -125,7 +125,7 @@ Hermes Gateway 独立服务端进程
 
 ## PostgreSQL 与 Alembic
 
-`docker compose up -d db` 负责启动 PostgreSQL；`alembic upgrade head` 负责把数据库结构升级到代码要求的最新版本。首次迁移会创建六张业务表以及 Alembic 自己的 `alembic_version` 版本表；以后只按顺序执行尚未应用的增量迁移，不会重复创建已有表。
+`docker compose up -d db` 负责启动 PostgreSQL；`alembic upgrade head` 负责把数据库结构升级到代码要求的最新版本。Alembic 会按版本顺序创建业务表以及自己的 `alembic_version` 记录；以后只执行尚未应用的增量迁移，不会重复创建已有表。阶段投放计划对应迁移版本为 `0005`。
 
 Alembic 管理的是表、字段、索引、外键和唯一约束等数据库结构，不负责启动数据库，也不负责写入营销活动数据。当前已建立以下表结构：
 
@@ -137,6 +137,9 @@ Alembic 管理的是表、字段、索引、外键和唯一约束等数据库结
 - `idempotency_records`
 - `marketing_strategy_frameworks`
 - `marketing_strategy_versions`
+- `campaign_stage_workflows`
+- `stage_media_plans`
+- `stage_media_plan_versions`
 
 PostgreSQL 已是活动业务数据的事实来源。每个 HTTP 请求创建独立的 SQLAlchemy Session，`CampaignService` 通过 `CampaignRepository` 持久化活动、结构化上下文、对话历史、状态流转、Hermes 执行结果和幂等结果。重启 FastAPI 后数据不会丢失，前端可重新读取活动并继续原来的 Hermes 会话。
 
@@ -178,6 +181,10 @@ Password: marketing_agent_dev
 - `GET /api/v1/campaigns/{campaign_id}/strategy-framework`
 - `POST /api/v1/campaigns/{campaign_id}/strategy-framework/revise`
 - `POST /api/v1/campaigns/{campaign_id}/strategy-framework/confirm`
+- `POST /api/v1/campaigns/{campaign_id}/media-plans/{stage_code}/generate`
+- `GET /api/v1/campaigns/{campaign_id}/media-plans/{stage_code}`
+- `POST /api/v1/campaigns/{campaign_id}/media-plans/{stage_code}/revise`
+- `POST /api/v1/campaigns/{campaign_id}/media-plans/{stage_code}/confirm`
 
 策略接口只允许在合法活动状态下调用。首次生成会创建策略 V1；用户提出修改意见时，Hermes 使用同一策略会话和当前完整版本生成一个新的完整版本，旧版本标记为 `SUPERSEDED` 但不会删除。修订请求本身也记录为 Gate1 的 `REVISION_REQUESTED` 决策。确认时前端必须提交当前 `expected_version`，后端把 `APPROVE` 决策绑定到该版本，避免用户在过期页面误确认旧策略。
 
@@ -191,6 +198,38 @@ STRATEGY_PENDING_CONFIRMATION
 
 所有策略写接口也要求 `Idempotency-Key`。Hermes 暂时失败时不会覆盖当前有效版本，同一个幂等键可以安全重试；FastAPI 或 Gateway 重启后，策略版本、Gate 决策和 Hermes 的 `stored_session_id` 都可从 PostgreSQL 恢复。
 
+## A 阶段投放计划与 Gate1.5
+
+Gate1 确认策略后，系统会建立 A/B/C 三条独立阶段工作流。本期只开放 A 阶段投放计划；对 B 或 C 调用计划接口会返回 `409 STAGE_NOT_OPEN`。底层结构已经按阶段隔离，后续开放 B/C 时不需要重新设计版本表和 URL。
+
+```text
+Gate1 已确认策略
+  → 生成 A 阶段投放计划 V1
+MEDIA_PLAN_PENDING_CONFIRMATION
+  ├─ 补充关键参数或提交修改意见 → V2/V3/...（旧版本保留）
+  └─ 当前版本通过全部硬校验 → A-Gate1.5 确认
+MEDIA_PLAN_CONFIRMED
+```
+
+计划由 `marketing-media-plan` Skill 生成，拥有独立 Hermes 会话；修订时通过 `stored_session_id` 恢复该计划会话。Hermes 负责受众包、投放节奏、测试矩阵、创意槽位和优化建议，FastAPI 负责以下确定性约束：
+
+- A 阶段预算等于活动总预算的 50%，金额使用十进制计算；
+- 确认日期合法，计划日程不超出阶段日期；
+- A 阶段必须包含 15 个创意槽位，其中口播 9 个、短视频 6 个；
+- 预算单元、受众、日程、测试矩阵和素材槽位引用必须有效；
+- Gate1.5 只能确认最新版本，并绑定该版本 ID。
+
+以下字段允许在初始草案中暂缺，但补齐前不能通过 Gate1.5：
+
+- `campaign_total_budget`
+- `stage_start_date`
+- `stage_end_date`
+- `target_roi`
+
+前端可在 `generate` 请求中提供这些字段，也可以随后通过 `revise` 补充。补参和自然语言修改都会生成完整新版本；不会原地覆盖历史记录。所有写请求必须带 `Idempotency-Key`，修订和确认还必须带 `expected_version`，用于防止重试重复执行和旧页面覆盖新计划。
+
+当前计划仅在本系统内生成、修订、确认和持久化，不会调用千川 API，不会创建真实广告计划，也不会提前生成视频脚本或成片。
+
 ## 代码阅读建议
 
 1. `app/campaigns/state_machine.py`：后端如何阻止跨阶段跳转。
@@ -199,4 +238,7 @@ STRATEGY_PENDING_CONFIRMATION
 4. `app/campaigns/service.py`：对话、幂等和状态推进如何串起来。
 5. `app/strategies/service.py`：策略生成、修订、失败恢复和 Gate1 确认。
 6. `app/strategies/router.py`：策略 HTTP 接口及 404/409/502/503 错误映射。
+7. `app/media_plans/validation.py`：预算、日期、素材数量和引用关系的硬校验。
+8. `app/media_plans/service.py`：阶段计划版本、失败恢复、幂等和 Gate1.5。
+9. `app/media_plans/router.py`：阶段计划 API 及稳定业务错误码。
 
