@@ -1,9 +1,15 @@
 from collections import deque
 
-from app.hermes.contracts import MarketingContextResult, MarketingStrategyResult
+from app.hermes.contracts import (
+    MarketingContextResult,
+    MarketingStrategyResult,
+    StageMediaPlanResult,
+)
 from app.hermes.ports import (
     ContextIntakeRequest,
     ContextIntakeResponse,
+    MediaPlanGenerationRequest,
+    MediaPlanGenerationResponse,
     StrategyGenerationRequest,
     StrategyGenerationResponse,
 )
@@ -19,6 +25,10 @@ class FakeHermesAdapter:
             MarketingStrategyResult | StrategyGenerationResponse | Exception
         ]
         | None = None,
+        media_plan_results: list[
+            StageMediaPlanResult | MediaPlanGenerationResponse | Exception
+        ]
+        | None = None,
     ) -> None:
         self._results = deque(results)
         self.call_count = 0
@@ -26,6 +36,9 @@ class FakeHermesAdapter:
         self._strategy_results = deque(strategy_results or [])
         self.strategy_call_count = 0
         self.strategy_requests: list[StrategyGenerationRequest] = []
+        self._media_plan_results = deque(media_plan_results or [])
+        self.media_plan_call_count = 0
+        self.media_plan_requests: list[MediaPlanGenerationRequest] = []
 
     async def run_context_intake(self, request: ContextIntakeRequest) -> ContextIntakeResponse:
         self.call_count += 1
@@ -54,5 +67,21 @@ class FakeHermesAdapter:
             result=result,
             stored_session_id=request.stored_session_id
             or f"fake-strategy-stored-{self.strategy_call_count}",
+        )
+
+    async def run_media_plan_generation(
+        self, request: MediaPlanGenerationRequest
+    ) -> MediaPlanGenerationResponse:
+        self.media_plan_call_count += 1
+        self.media_plan_requests.append(request)
+        result = self._media_plan_results.popleft()
+        if isinstance(result, Exception):
+            raise result
+        if isinstance(result, MediaPlanGenerationResponse):
+            return result
+        return MediaPlanGenerationResponse(
+            result=result,
+            stored_session_id=request.stored_session_id
+            or f"fake-media-plan-stored-{self.media_plan_call_count}",
         )
 

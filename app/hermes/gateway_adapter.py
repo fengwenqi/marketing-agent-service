@@ -6,7 +6,11 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from app.hermes.contracts import MarketingContextResult, MarketingStrategyResult
+from app.hermes.contracts import (
+    MarketingContextResult,
+    MarketingStrategyResult,
+    StageMediaPlanResult,
+)
 from app.hermes.ports import (
     ContextIntakeRequest,
     ContextIntakeResponse,
@@ -14,6 +18,8 @@ from app.hermes.ports import (
     HermesRequestConflictError,
     HermesRequestPreviouslyFailedError,
     HermesTurnTimeoutError,
+    MediaPlanGenerationRequest,
+    MediaPlanGenerationResponse,
     StrategyGenerationRequest,
     StrategyGenerationResponse,
 )
@@ -79,6 +85,29 @@ class HermesGatewayAdapter:
             )
             return StrategyGenerationResponse(
                 result=self._validate_strategy_result(text),
+                stored_session_id=stored_session_id,
+            )
+
+    async def run_media_plan_generation(
+        self, request: MediaPlanGenerationRequest
+    ) -> MediaPlanGenerationResponse:
+        source = str(self.hermes_source)
+        if source not in sys.path:
+            sys.path.insert(0, source)
+        from hermes_cli.gateway_client import connect_gateway
+
+        async with connect_gateway() as client:
+            session_id, stored_session_id, _ = await self._open_media_plan_session(
+                client, request
+            )
+            text = await self._submit_and_wait(
+                client,
+                session_id=session_id,
+                request_id=request.request_id,
+                prompt=self._media_plan_prompt(request),
+            )
+            return MediaPlanGenerationResponse(
+                result=self._validate_media_plan_result(text),
                 stored_session_id=stored_session_id,
             )
 
@@ -190,6 +219,41 @@ class HermesGatewayAdapter:
             bool(request.stored_session_id),
         )
 
+    async def _open_media_plan_session(
+        self, client: Any, request: MediaPlanGenerationRequest
+    ) -> tuple[str, str, bool]:
+        if request.stored_session_id:
+            try:
+                snapshot = await client.rpc(
+                    "session.resume",
+                    session_id=request.stored_session_id,
+                    source="tool",
+                )
+                return (
+                    snapshot["session_id"],
+                    snapshot.get("stored_session_id") or request.stored_session_id,
+                    False,
+                )
+            except Exception as error:
+                if str(error) not in {"not_found", "session_not_found"}:
+                    raise
+        description = await client.rpc("runtime.describe")
+        parameters = description.get("session_create", {}).get("parameters", [])
+        if "skills" not in parameters:
+            raise HermesGatewayError("Gateway session.create does not support skills")
+        snapshot = await client.rpc(
+            "session.create",
+            request_id=request.request_id,
+            source="tool",
+            cwd=str(self.workspace),
+            skills=["marketing-media-plan"],
+        )
+        return (
+            snapshot["session_id"],
+            snapshot.get("stored_session_id") or snapshot["session_id"],
+            bool(request.stored_session_id),
+        )
+
     @staticmethod
     def _prompt(request: ContextIntakeRequest, *, recovering: bool) -> str:
         base = (
@@ -236,6 +300,32 @@ class HermesGatewayAdapter:
         except ValidationError as error:
             raise HermesOutputValidationError(
                 "Hermes returned JSON that does not match MarketingStrategyResult"
+            ) from error
+
+    @staticmethod
+    def _media_plan_prompt(request: MediaPlanGenerationRequest) -> str:
+        payload = {
+            "stage_code": request.stage_code,
+            "marketing_context": request.marketing_context,
+            "confirmed_strategy": request.confirmed_strategy,
+            "confirmation_inputs": request.confirmation_inputs,
+            "current_plan": request.current_plan,
+            "revision_instruction": request.revision_instruction,
+        }
+        return (
+            "请执行 marketing-media-plan。只生成输入阶段的完整千川投放计划；"
+            "修改或补参模式也必须返回完整计划。最终只能输出符合 Skill 模板的 JSON 对象，"
+            "不要输出分析、说明或 Markdown 代码块。\n输入：\n"
+            + json.dumps(payload, ensure_ascii=False)
+        )
+
+    @classmethod
+    def _validate_media_plan_result(cls, text: str) -> StageMediaPlanResult:
+        try:
+            return StageMediaPlanResult.model_validate(cls._decode_json(text))
+        except ValidationError as error:
+            raise HermesOutputValidationError(
+                "Hermes returned JSON that does not match StageMediaPlanResult"
             ) from error
 
     async def _wait_for_completion(

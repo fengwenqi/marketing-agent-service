@@ -1,7 +1,11 @@
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from app.hermes.contracts import MarketingContextResult, MarketingStrategyResult
+from app.hermes.contracts import (
+    MarketingContextResult,
+    MarketingStrategyResult,
+    StageMediaPlanResult,
+)
 
 
 class HermesOutputValidationError(RuntimeError):
@@ -60,10 +64,33 @@ class StrategyGenerationResponse:
     stored_session_id: str
 
 
+@dataclass(frozen=True)
+class MediaPlanGenerationRequest:
+    campaign_id: str
+    stage_code: str
+    request_id: str
+    marketing_context: dict[str, Any]
+    confirmed_strategy: dict[str, Any]
+    confirmation_inputs: dict[str, Any]
+    stored_session_id: str | None = None
+    current_plan: dict[str, Any] | None = None
+    revision_instruction: str | None = None
+
+
+@dataclass(frozen=True)
+class MediaPlanGenerationResponse:
+    result: StageMediaPlanResult
+    stored_session_id: str
+
+
 class HermesPort(Protocol):
     async def run_context_intake(self, request: ContextIntakeRequest) -> ContextIntakeResponse: ...
 
     async def run_strategy_generation(
         self, request: StrategyGenerationRequest
     ) -> StrategyGenerationResponse: ...
+
+    async def run_media_plan_generation(
+        self, request: MediaPlanGenerationRequest
+    ) -> MediaPlanGenerationResponse: ...
 
