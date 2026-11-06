@@ -188,3 +188,137 @@ class MarketingStrategyResult(BaseModel):
                 raise ValueError("content brief stage must match strategy stage")
         return self
 
+
+DecimalString = str
+
+
+class MediaPlanDeliveryObjective(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    channel: Literal["douyin"]
+    platform: Literal["qianchuan"]
+    launch_target: Literal["live_room"]
+    objective: str = Field(min_length=1)
+    target_roi: DecimalString | None = Field(
+        default=None, pattern=r"^\d+(?:\.\d+)?$"
+    )
+
+
+class MediaPlanAudiencePackage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+    targeting: list[str] = Field(min_length=1)
+
+
+class MediaPlanBudgetUnit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    allocation_ratio: DecimalString = Field(pattern=r"^\d+(?:\.\d+)?$")
+    amount: DecimalString | None = Field(default=None, pattern=r"^\d+(?:\.\d+)?$")
+    audience_package_ids: list[str] = Field(min_length=1)
+
+
+class MediaPlanBudget(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    stage_budget: DecimalString | None = Field(
+        default=None, pattern=r"^\d+(?:\.\d+)?$"
+    )
+    units: list[MediaPlanBudgetUnit] = Field(min_length=1)
+
+
+class MediaPlanScheduleEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1)
+    start_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    end_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    budget_unit_ids: list[str] = Field(min_length=1)
+    description: str = Field(min_length=1)
+
+
+class MediaPlanBiddingStrategy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    method: str = Field(min_length=1)
+    optimization_goal: str = Field(min_length=1)
+    bid_guidance: str = Field(min_length=1)
+
+
+class MediaPlanTestCell(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1)
+    audience_package_id: str = Field(min_length=1)
+    creative_slot_ids: list[str] = Field(min_length=1)
+    budget_unit_id: str = Field(min_length=1)
+
+
+class MediaPlanCreativeSlot(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1)
+    format: Literal["oral_video", "short_video"]
+    direction: str = Field(min_length=1)
+    test_variable: str = Field(min_length=1)
+    priority: int = Field(ge=1)
+
+
+class MediaPlanMetric(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1)
+    target: str = Field(min_length=1)
+    window: str = Field(min_length=1)
+
+
+class MediaPlanOptimizationRule(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    condition: str = Field(min_length=1)
+    action: str = Field(min_length=1)
+
+
+class MediaPlanRiskControl(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    risk: str = Field(min_length=1)
+    mitigation: str = Field(min_length=1)
+
+
+class StageMediaPlanResult(BaseModel):
+    """A 阶段投放计划 Skill 的严格白名单输出。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["1.0"]
+    stage_code: Literal["A"]
+    plan_summary: str = Field(min_length=1)
+    planning_assumptions: list[str]
+    delivery_objective: MediaPlanDeliveryObjective
+    audience_packages: list[MediaPlanAudiencePackage] = Field(min_length=1)
+    budget_plan: MediaPlanBudget
+    schedule: list[MediaPlanScheduleEntry] = Field(min_length=1)
+    bidding_strategy: MediaPlanBiddingStrategy
+    testing_matrix: list[MediaPlanTestCell] = Field(min_length=1)
+    creative_slots: list[MediaPlanCreativeSlot] = Field(min_length=15, max_length=15)
+    monitoring_metrics: list[MediaPlanMetric] = Field(min_length=1)
+    optimization_rules: list[MediaPlanOptimizationRule] = Field(min_length=1)
+    risk_controls: list[MediaPlanRiskControl] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_A_creative_slots(self) -> "StageMediaPlanResult":
+        ids = [slot.id for slot in self.creative_slots]
+        if len(ids) != len(set(ids)):
+            raise ValueError("creative slot ids must be unique")
+        oral_count = sum(slot.format == "oral_video" for slot in self.creative_slots)
+        short_count = sum(slot.format == "short_video" for slot in self.creative_slots)
+        if (oral_count, short_count) != (9, 6):
+            raise ValueError("A stage requires 9 oral and 6 short video slots")
+        return self
+
