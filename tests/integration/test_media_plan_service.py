@@ -338,6 +338,43 @@ async def test_changed_confirmed_strategy_during_generation_rejects_stale_output
 
 
 @pytest.mark.integration
+async def test_reopened_strategy_status_invalidates_existing_media_plan_source() -> None:
+    marker = uuid4().hex
+    campaign, framework_id, _ = await create_confirmed_campaign(marker)
+    async with SessionFactory() as session:
+        service = MediaPlanService(
+            MediaPlanRepository(session),
+            FakeHermesAdapter(
+                [], media_plan_results=[media_plan_result(summary="V1", complete=False)]
+            ),
+        )
+        await service.generate(
+            campaign.id,
+            StageCode.A,
+            confirmation_inputs=ConfirmationInputs(),
+            idempotency_key=f"generate-reopened-{marker}",
+        )
+
+    async with SessionFactory() as session:
+        framework = await session.get(MarketingStrategyFramework, framework_id)
+        framework.status = "GENERATING"
+        await session.commit()
+
+    async with SessionFactory() as session:
+        service = MediaPlanService(
+            MediaPlanRepository(session), FakeHermesAdapter([])
+        )
+        with pytest.raises(StaleStrategySourceError):
+            await service.confirm(
+                campaign.id,
+                StageCode.A,
+                expected_version=1,
+                actor_id="approver",
+                idempotency_key=f"confirm-reopened-{marker}",
+            )
+
+
+@pytest.mark.integration
 async def test_gate_1_5_requires_complete_current_version_and_binds_approval() -> None:
     marker = uuid4().hex
     campaign, _, _ = await create_confirmed_campaign(marker)

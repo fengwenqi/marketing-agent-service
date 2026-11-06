@@ -139,6 +139,16 @@ def test_schedule_outside_confirmed_range_is_rejected() -> None:
     assert "SCHEDULE_OUTSIDE_STAGE_RANGE" in [error.code for error in result.errors]
 
 
+def test_semantically_invalid_schedule_date_is_reported_not_raised() -> None:
+    result = validate_media_plan(
+        complete_plan(start="2026-02-30", end="2026-11-20"),
+        full_inputs(),
+        A_strategy(),
+    )
+
+    assert "INVALID_SCHEDULE_DATE" in [error.code for error in result.errors]
+
+
 def test_unknown_audience_budget_and_creative_references_are_rejected() -> None:
     payload = deepcopy(complete_plan().model_dump(mode="json"))
     payload["testing_matrix"][0]["audience_package_id"] = "missing-audience"

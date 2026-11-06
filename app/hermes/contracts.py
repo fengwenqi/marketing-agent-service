@@ -313,9 +313,16 @@ class StageMediaPlanResult(BaseModel):
 
     @model_validator(mode="after")
     def validate_A_creative_slots(self) -> "StageMediaPlanResult":
-        ids = [slot.id for slot in self.creative_slots]
-        if len(ids) != len(set(ids)):
-            raise ValueError("creative slot ids must be unique")
+        collections = {
+            "audience package": [item.id for item in self.audience_packages],
+            "budget unit": [item.id for item in self.budget_plan.units],
+            "schedule": [item.id for item in self.schedule],
+            "test cell": [item.id for item in self.testing_matrix],
+            "creative slot": [item.id for item in self.creative_slots],
+        }
+        for label, ids in collections.items():
+            if len(ids) != len(set(ids)):
+                raise ValueError(f"{label} ids must be unique")
         oral_count = sum(slot.format == "oral_video" for slot in self.creative_slots)
         short_count = sum(slot.format == "short_video" for slot in self.creative_slots)
         if (oral_count, short_count) != (9, 6):

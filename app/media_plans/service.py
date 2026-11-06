@@ -271,7 +271,9 @@ class MediaPlanService:
             or plan.current_version_id is None
         ):
             raise MediaPlanNotFoundError(campaign_id)
-        self._assert_source_current(plan, framework.confirmed_version_id)
+        self._assert_source_current(
+            plan, framework.confirmed_version_id, framework.status
+        )
         current = await self.repository.get_version(plan.current_version_id)
         if current is None:
             raise MediaPlanNotFoundError(plan.current_version_id)
@@ -402,7 +404,10 @@ class MediaPlanService:
         )
         if workflow is None or completed_plan is None or framework is None:
             raise MediaPlanNotFoundError(campaign_id)
-        if framework.confirmed_version_id != source_strategy_version_id:
+        if (
+            framework.confirmed_version_id != source_strategy_version_id
+            or framework.status != "CONFIRMED"
+        ):
             workflow.state = failure_state.value
             completed_plan.status = "STALE_SOURCE"
             self.repository.add_execution(
@@ -507,9 +512,14 @@ class MediaPlanService:
 
     @staticmethod
     def _assert_source_current(
-        plan: StageMediaPlan, confirmed_version_id: UUID | None
+        plan: StageMediaPlan,
+        confirmed_version_id: UUID | None,
+        framework_status: str,
     ) -> None:
-        if confirmed_version_id != plan.source_strategy_version_id:
+        if (
+            confirmed_version_id != plan.source_strategy_version_id
+            or framework_status != "CONFIRMED"
+        ):
             raise StaleStrategySourceError("media plan source strategy is no longer confirmed")
 
     async def confirm(
@@ -543,7 +553,9 @@ class MediaPlanService:
             or plan.current_version_id is None
         ):
             raise MediaPlanNotFoundError(campaign_id)
-        self._assert_source_current(plan, framework.confirmed_version_id)
+        self._assert_source_current(
+            plan, framework.confirmed_version_id, framework.status
+        )
         current = await self.repository.get_version(plan.current_version_id)
         if current is None:
             raise MediaPlanNotFoundError(plan.current_version_id)

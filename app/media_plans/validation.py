@@ -174,8 +174,18 @@ def validate_media_plan(
                     )
                 )
                 continue
-            entry_start = date.fromisoformat(entry.start_date)
-            entry_end = date.fromisoformat(entry.end_date)
+            try:
+                entry_start = date.fromisoformat(entry.start_date)
+                entry_end = date.fromisoformat(entry.end_date)
+            except ValueError:
+                errors.append(
+                    _issue(
+                        "INVALID_SCHEDULE_DATE",
+                        f"schedule.{entry.id}",
+                        "schedule dates must be real ISO calendar dates",
+                    )
+                )
+                continue
             if (
                 entry_start > entry_end
                 or entry_start < inputs.stage_start_date

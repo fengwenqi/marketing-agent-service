@@ -44,6 +44,15 @@ async def test_A_plan_api_draft_revision_confirmation_and_restart() -> None:
             headers={"Idempotency-Key": f"generate-{marker}"},
             json={"confirmation_inputs": {}},
         )
+        empty_revision = await client.post(
+            f"/api/v1/campaigns/{campaign.id}/media-plans/A/revise",
+            headers={"Idempotency-Key": f"empty-revision-{marker}"},
+            json={
+                "expected_version": 1,
+                "actor_id": "planner",
+                "confirmation_inputs": {},
+            },
+        )
         incomplete_confirmation = await client.post(
             f"/api/v1/campaigns/{campaign.id}/media-plans/A/confirm",
             headers={"Idempotency-Key": f"confirm-incomplete-{marker}"},
@@ -89,6 +98,7 @@ async def test_A_plan_api_draft_revision_confirmation_and_restart() -> None:
         )
 
     assert generated.status_code == 200
+    assert empty_revision.status_code == 422
     assert generated.json()["current_version"]["missing_confirmation_fields"]
     assert incomplete_confirmation.status_code == 422
     assert incomplete_confirmation.json()["detail"]["code"] == "PLAN_NOT_CONFIRMABLE"

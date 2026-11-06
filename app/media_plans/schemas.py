@@ -25,7 +25,11 @@ class MediaPlanReviseRequest(BaseModel):
 
     @model_validator(mode="after")
     def require_revision_change(self) -> "MediaPlanReviseRequest":
-        if self.instruction is None and self.confirmation_inputs is None:
+        has_confirmation_change = (
+            self.confirmation_inputs is not None
+            and bool(self.confirmation_inputs.model_fields_set)
+        )
+        if self.instruction is None and not has_confirmation_change:
             raise ValueError("instruction or confirmation_inputs is required")
         return self
 

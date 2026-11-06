@@ -111,6 +111,13 @@ def test_valid_A_stage_draft_is_accepted() -> None:
         lambda payload: payload["creative_slots"][1].update(id="oral-1"),
         lambda payload: payload["creative_slots"].pop(),
         lambda payload: payload["creative_slots"][0].update(format="short_video"),
+        lambda payload: payload["audience_packages"].append(
+            deepcopy(payload["audience_packages"][0])
+        ),
+        lambda payload: payload["schedule"].append(deepcopy(payload["schedule"][0])),
+        lambda payload: payload["testing_matrix"].append(
+            deepcopy(payload["testing_matrix"][0])
+        ),
     ],
 )
 def test_invalid_A_stage_contract_is_rejected(mutate) -> None:
