@@ -10,6 +10,66 @@
 
 三者职责不同：FastAPI 负责 HTTP API、活动状态机和业务编排；PostgreSQL 负责持久化业务数据；Hermes Gateway 负责创建 Agent 会话并执行指定 Skill。Docker Desktop 程序安装在 `D:\Program Files\Docker\Docker`，镜像、容器和数据卷存放在 `D:\DockerData`。
 
+## 项目目录结构
+
+```text
+marketing-agent-service/
+├─ app/                         # FastAPI 应用源码
+│  ├─ campaigns/               # 营销活动、对话、上下文采集和状态机
+│  ├─ strategies/              # A/B/C 策略生成、修订、版本与 Gate1
+│  ├─ hermes/                  # Hermes Gateway 适配层和结构化输出契约
+│  ├─ gates/                   # Gate 审核规则
+│  ├─ models/                  # SQLAlchemy 业务数据模型
+│  ├─ database.py              # PostgreSQL 引擎和请求级 Session
+│  ├─ settings.py              # 环境变量配置
+│  └─ main.py                  # FastAPI 应用入口和路由注册
+├─ migrations/                 # Alembic 数据库增量迁移
+│  └─ versions/                # 0001～0004 版本迁移脚本
+├─ scripts/                    # 本地开发和验证脚本
+├─ tests/                      # 单元测试与 PostgreSQL 集成测试
+├─ docker-compose.yml          # 本地 PostgreSQL 容器配置
+├─ alembic.ini                 # Alembic 配置入口
+├─ pyproject.toml              # Python 依赖、测试和 Ruff 配置
+├─ uv.lock                     # Python 依赖锁定文件
+├─ .env.example                # 可提交的环境变量示例
+└─ README.md                   # 项目启动、架构和接口说明
+```
+
+### 关键目录与文件说明
+
+| 路径 | 功能说明 |
+| --- | --- |
+| `app/main.py` | 创建 FastAPI 应用、注入 Hermes 适配器、注册活动和策略路由，并提供健康检查。 |
+| `app/settings.py` | 从 `.env` 和系统环境变量读取数据库、Hermes 工作区及超时时间等配置。 |
+| `app/database.py` | 创建 SQLAlchemy 异步引擎、Session 工厂和 FastAPI 数据库依赖。 |
+| `app/models/business.py` | 定义活动、消息、Gate 决策、Hermes 执行记录、幂等记录及策略版本等 PostgreSQL 模型。 |
+| `app/campaigns/domain.py` | 定义活动状态、状态事件和 Gate 枚举等业务概念。 |
+| `app/campaigns/state_machine.py` | 校验活动状态流转，阻止跳过业务阶段或执行非法操作。 |
+| `app/campaigns/router.py` | 提供创建活动、查询活动、提交消息和读取对话历史的 HTTP API。 |
+| `app/campaigns/service.py` | 编排营销目标采集、对话持久化、Hermes 调用、幂等处理和失败恢复。 |
+| `app/campaigns/repository.py` | 封装活动、消息、执行记录和状态流转的数据库读写。 |
+| `app/campaigns/schemas.py` | 定义活动与消息接口的 Pydantic 请求和响应结构。 |
+| `app/strategies/router.py` | 提供策略生成、查询、修订和 Gate1 确认接口，并映射业务错误为 HTTP 状态码。 |
+| `app/strategies/service.py` | 编排策略 V1/V2…生成、旧版本留存、失败重试和精确版本确认。 |
+| `app/strategies/repository.py` | 封装策略框架、策略版本、Gate 决策及幂等记录的数据库操作。 |
+| `app/strategies/schemas.py` | 定义策略修订、确认及完整策略聚合响应的数据结构。 |
+| `app/hermes/contracts.py` | 用严格 Pydantic 模型校验营销目标和 A/B/C 策略的 LLM 结构化输出。 |
+| `app/hermes/ports.py` | 定义业务层依赖的 Hermes 抽象接口，使业务逻辑不直接依赖 Gateway 实现。 |
+| `app/hermes/gateway_adapter.py` | 通过 WebSocket/JSON-RPC 创建或恢复 Hermes 会话，执行对应 Skill 并取得结果。 |
+| `app/hermes/result_mapper.py` | 从 Hermes 响应中提取并转换结构化 JSON。 |
+| `app/hermes/fake_adapter.py` | 测试专用 Hermes 替身，避免自动化测试真实调用 LLM 或 Gateway。 |
+| `app/gates/policy.py` | 定义各 Gate 在不同活动状态下允许执行的审核动作。 |
+| `migrations/versions/` | 保存数据库结构的增量变更；部署或更新后通过 `alembic upgrade head` 应用。 |
+| `tests/unit/` | 验证状态机、输出契约、Gateway 适配和 Gate 规则等独立逻辑。 |
+| `tests/integration/` | 使用 PostgreSQL 验证持久化、重启恢复、策略版本和完整 API 流程。 |
+| `scripts/dev.ps1` | 启动 PostgreSQL、执行迁移并运行 FastAPI 开发服务。 |
+| `scripts/verify.ps1` | 执行项目测试和代码质量检查。 |
+| `docker-compose.yml` | 定义本地 PostgreSQL 服务、端口、账号和持久化数据卷。 |
+| `.env.example` | 环境变量模板；复制为 `.env` 后填写本机配置，真实 `.env` 不提交 Git。 |
+| `pyproject.toml` | 管理 Python 版本、项目依赖、pytest 与 Ruff 等工具配置。 |
+
+`.venv/`、`.pytest_cache/`、`.ruff_cache/`、`.env` 等均为本地运行环境或缓存，不属于业务源码，不应提交 Git。`docs/superpowers/` 中本次开发使用的内部设计和执行计划也已通过 `.gitignore` 排除。
+
 ## 首次启动
 
 ```powershell
