@@ -11,6 +11,9 @@ def test_business_tables_are_registered() -> None:
         "idempotency_records",
         "marketing_strategy_frameworks",
         "marketing_strategy_versions",
+        "campaign_stage_workflows",
+        "stage_media_plans",
+        "stage_media_plan_versions",
     }
 
 
@@ -59,4 +62,37 @@ def test_gate_decision_can_reference_exact_business_version() -> None:
     assert decisions.c.resource_type.nullable is True
     assert decisions.c.resource_id.nullable is True
     assert decisions.c.resource_version_id.nullable is True
+
+
+def test_stage_workflows_and_media_plan_versions_are_constrained() -> None:
+    workflows = Base.metadata.tables["campaign_stage_workflows"]
+    plans = Base.metadata.tables["stage_media_plans"]
+    versions = Base.metadata.tables["stage_media_plan_versions"]
+
+    workflow_uniques = {
+        tuple(column.name for column in constraint.columns)
+        for constraint in workflows.constraints
+        if constraint.__class__.__name__ == "UniqueConstraint"
+    }
+    plan_uniques = {
+        tuple(column.name for column in constraint.columns)
+        for constraint in plans.constraints
+        if constraint.__class__.__name__ == "UniqueConstraint"
+    }
+    version_uniques = {
+        tuple(column.name for column in constraint.columns)
+        for constraint in versions.constraints
+        if constraint.__class__.__name__ == "UniqueConstraint"
+    }
+
+    assert ("campaign_id", "stage_code") in workflow_uniques
+    assert ("campaign_id", "stage_code") in plan_uniques
+    assert ("media_plan_id", "version") in version_uniques
+    assert plans.c.source_strategy_version_id.nullable is False
+    assert plans.c.current_version_id.nullable is True
+    assert plans.c.confirmed_version_id.nullable is True
+    assert versions.c.confirmation_inputs.nullable is False
+    assert versions.c.missing_confirmation_fields.nullable is False
+    assert versions.c.validation_result.nullable is False
+    assert versions.c.content.nullable is False
 

@@ -1,4 +1,9 @@
-from app.campaigns.domain import CampaignState, GateCode, GateDecisionType
+from app.campaigns.domain import (
+    CampaignState,
+    GateCode,
+    GateDecisionType,
+    StageWorkflowState,
+)
 
 
 class GateNotAvailableError(ValueError):
@@ -6,7 +11,7 @@ class GateNotAvailableError(ValueError):
 
 
 def validate_gate_decision(
-    state: CampaignState,
+    state: CampaignState | StageWorkflowState,
     gate: GateCode,
     decision: GateDecisionType,
 ) -> None:
@@ -15,5 +20,10 @@ def validate_gate_decision(
     _ = decision
     if state is CampaignState.STRATEGY_PENDING_CONFIRMATION and gate is GateCode.GATE_1:
         return
-    raise GateNotAvailableError(f"{gate} is unavailable while campaign is {state}")
+    if (
+        state is StageWorkflowState.MEDIA_PLAN_PENDING_CONFIRMATION
+        and gate is GateCode.GATE_1_5
+    ):
+        return
+    raise GateNotAvailableError(f"{gate} is unavailable while state is {state}")
 

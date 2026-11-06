@@ -1,6 +1,11 @@
 import pytest
 
-from app.campaigns.domain import CampaignState, GateCode, GateDecisionType
+from app.campaigns.domain import (
+    CampaignState,
+    GateCode,
+    GateDecisionType,
+    StageWorkflowState,
+)
 from app.gates.policy import GateNotAvailableError, validate_gate_decision
 
 
@@ -18,6 +23,23 @@ def test_later_gates_are_not_reachable_in_first_slice(gate: GateCode) -> None:
         validate_gate_decision(
             CampaignState.STRATEGY_PENDING_CONFIRMATION,
             gate,
+            GateDecisionType.APPROVE,
+        )
+
+
+def test_gate_1_5_is_available_for_pending_stage_media_plan() -> None:
+    validate_gate_decision(
+        StageWorkflowState.MEDIA_PLAN_PENDING_CONFIRMATION,
+        GateCode.GATE_1_5,
+        GateDecisionType.APPROVE,
+    )
+
+
+def test_gate_1_5_rejects_unfinished_stage_media_plan() -> None:
+    with pytest.raises(GateNotAvailableError):
+        validate_gate_decision(
+            StageWorkflowState.MEDIA_PLAN_GENERATING,
+            GateCode.GATE_1_5,
             GateDecisionType.APPROVE,
         )
 
