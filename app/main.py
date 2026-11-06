@@ -3,6 +3,7 @@ from fastapi import FastAPI
 from app.campaigns.router import router as campaigns_router
 from app.hermes.gateway_adapter import HermesGatewayAdapter
 from app.hermes.ports import HermesPort
+from app.media_plans.router import router as media_plans_router
 from app.settings import get_settings
 from app.strategies.router import router as strategies_router
 
@@ -25,6 +26,7 @@ def create_app(*, hermes: HermesPort | None = None) -> FastAPI:
     app.state.hermes = hermes
     app.include_router(campaigns_router)
     app.include_router(strategies_router)
+    app.include_router(media_plans_router)
 
     @app.get("/health", tags=["system"])
     async def health() -> dict[str, str]:
