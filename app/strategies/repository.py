@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.business import (
     Campaign,
+    CampaignStageWorkflow,
     GateDecision,
     HermesExecution,
     IdempotencyRecord,
@@ -40,6 +41,27 @@ class StrategyRepository:
 
     def add_framework(self, framework: MarketingStrategyFramework) -> None:
         self.session.add(framework)
+
+    async def ensure_stage_workflows(self, campaign_id: UUID) -> None:
+        existing = set(
+            (
+                await self.session.scalars(
+                    select(CampaignStageWorkflow.stage_code).where(
+                        CampaignStageWorkflow.campaign_id == campaign_id
+                    )
+                )
+            ).all()
+        )
+        for stage_code in ("A", "B", "C"):
+            if stage_code not in existing:
+                self.session.add(
+                    CampaignStageWorkflow(
+                        campaign_id=campaign_id,
+                        stage_code=stage_code,
+                        state="NOT_STARTED",
+                        version=1,
+                    )
+                )
 
     def add_version(self, version: MarketingStrategyVersion) -> None:
         self.session.add(version)

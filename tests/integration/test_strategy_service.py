@@ -2,12 +2,13 @@ from copy import deepcopy
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import select
 
-from app.campaigns.domain import CampaignState
+from app.campaigns.domain import CampaignState, StageCode
 from app.database import SessionFactory, engine
 from app.hermes.contracts import MarketingStrategyResult
 from app.hermes.fake_adapter import FakeHermesAdapter
-from app.models.business import Campaign
+from app.models.business import Campaign, CampaignStageWorkflow
 from app.strategies.repository import StrategyRepository
 from app.strategies.service import (
     ExternalStrategyServiceError,
@@ -169,6 +170,15 @@ async def test_gate1_confirms_exact_current_version_and_survives_restart() -> No
             StrategyRepository(session), FakeHermesAdapter([], strategy_results=[])
         )
         loaded = await restarted.get_for_campaign(campaign.id)
+        stage_codes = set(
+            (
+                await session.scalars(
+                    select(CampaignStageWorkflow.stage_code).where(
+                        CampaignStageWorkflow.campaign_id == campaign.id
+                    )
+                )
+            ).all()
+        )
 
     assert confirmed.framework.confirmed_version_id == confirmed.current_version.id
     assert confirmed.current_version.status == "CONFIRMED"
@@ -176,3 +186,4 @@ async def test_gate1_confirms_exact_current_version_and_survives_restart() -> No
     assert loaded.campaign.state == CampaignState.STRATEGY_CONFIRMED.value
     assert loaded.decisions[-1].resource_version_id == loaded.current_version.id
     assert loaded.decisions[-1].decision == "APPROVE"
+    assert stage_codes == {stage.value for stage in StageCode}

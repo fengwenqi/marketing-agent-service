@@ -380,6 +380,8 @@ class StrategyService:
             resource_id=framework.id,
             resource_version_id=current.id,
         )
+        # Gate1 确认后一次性建立 A/B/C 阶段工作流；本期只有 A 可继续执行。
+        await self.repository.ensure_stage_workflows(campaign_id)
         current.status = "CONFIRMED"
         framework.status = "CONFIRMED"
         framework.confirmed_version_id = current.id

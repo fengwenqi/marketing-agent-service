@@ -1,0 +1,233 @@
+from __future__ import annotations
+
+from typing import Any
+from uuid import UUID
+
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.business import (
+    Campaign,
+    CampaignStageWorkflow,
+    GateDecision,
+    HermesExecution,
+    IdempotencyRecord,
+    MarketingStrategyFramework,
+    MarketingStrategyVersion,
+    StageMediaPlan,
+    StageMediaPlanVersion,
+)
+
+
+class MediaPlanRepository:
+    """阶段投放计划的 PostgreSQL 访问层；事务由服务层控制。"""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def lock_campaign(self, campaign_id: UUID) -> Campaign | None:
+        return await self.session.scalar(
+            select(Campaign)
+            .where(Campaign.id == campaign_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+
+    async def get_strategy_framework(
+        self, campaign_id: UUID, *, lock: bool = False
+    ) -> MarketingStrategyFramework | None:
+        statement = (
+            select(MarketingStrategyFramework)
+            .where(MarketingStrategyFramework.campaign_id == campaign_id)
+            .execution_options(populate_existing=True)
+        )
+        if lock:
+            statement = statement.with_for_update()
+        return await self.session.scalar(statement)
+
+    async def get_strategy_version(
+        self, version_id: UUID
+    ) -> MarketingStrategyVersion | None:
+        return await self.session.scalar(
+            select(MarketingStrategyVersion)
+            .where(MarketingStrategyVersion.id == version_id)
+            .execution_options(populate_existing=True)
+        )
+
+    async def get_workflow(
+        self, campaign_id: UUID, stage_code: str, *, lock: bool = False
+    ) -> CampaignStageWorkflow | None:
+        statement = (
+            select(CampaignStageWorkflow)
+            .where(
+                CampaignStageWorkflow.campaign_id == campaign_id,
+                CampaignStageWorkflow.stage_code == stage_code,
+            )
+            .execution_options(populate_existing=True)
+        )
+        if lock:
+            statement = statement.with_for_update()
+        return await self.session.scalar(statement)
+
+    async def get_plan(
+        self, campaign_id: UUID, stage_code: str, *, lock: bool = False
+    ) -> StageMediaPlan | None:
+        statement = (
+            select(StageMediaPlan)
+            .where(
+                StageMediaPlan.campaign_id == campaign_id,
+                StageMediaPlan.stage_code == stage_code,
+            )
+            .execution_options(populate_existing=True)
+        )
+        if lock:
+            statement = statement.with_for_update()
+        return await self.session.scalar(statement)
+
+    async def get_version(self, version_id: UUID) -> StageMediaPlanVersion | None:
+        return await self.session.scalar(
+            select(StageMediaPlanVersion)
+            .where(StageMediaPlanVersion.id == version_id)
+            .execution_options(populate_existing=True)
+        )
+
+    async def list_versions(self, plan_id: UUID) -> list[StageMediaPlanVersion]:
+        rows = await self.session.scalars(
+            select(StageMediaPlanVersion)
+            .where(StageMediaPlanVersion.media_plan_id == plan_id)
+            .order_by(StageMediaPlanVersion.version)
+        )
+        return list(rows.all())
+
+    async def next_version_number(self, plan_id: UUID) -> int:
+        maximum = await self.session.scalar(
+            select(func.max(StageMediaPlanVersion.version)).where(
+                StageMediaPlanVersion.media_plan_id == plan_id
+            )
+        )
+        return int(maximum or 0) + 1
+
+    async def list_decisions(self, campaign_id: UUID, plan_id: UUID) -> list[GateDecision]:
+        rows = await self.session.scalars(
+            select(GateDecision)
+            .where(
+                GateDecision.campaign_id == campaign_id,
+                GateDecision.gate_code == "GATE_1_5",
+                GateDecision.resource_id == plan_id,
+            )
+            .order_by(GateDecision.decision_version)
+        )
+        return list(rows.all())
+
+    async def add_gate_decision(
+        self,
+        *,
+        campaign_id: UUID,
+        decision: str,
+        reason: str | None,
+        actor_id: str,
+        resource_id: UUID,
+        resource_version_id: UUID,
+    ) -> GateDecision:
+        maximum = await self.session.scalar(
+            select(func.max(GateDecision.decision_version)).where(
+                GateDecision.campaign_id == campaign_id,
+                GateDecision.gate_code == "GATE_1_5",
+            )
+        )
+        row = GateDecision(
+            campaign_id=campaign_id,
+            gate_code="GATE_1_5",
+            decision=decision,
+            reason=reason,
+            actor_id=actor_id,
+            decision_version=int(maximum or 0) + 1,
+            resource_type="STAGE_MEDIA_PLAN",
+            resource_id=resource_id,
+            resource_version_id=resource_version_id,
+        )
+        self.session.add(row)
+        return row
+
+    async def find_revision_decision(
+        self,
+        *,
+        campaign_id: UUID,
+        resource_version_id: UUID,
+        reason: str,
+        actor_id: str,
+    ) -> GateDecision | None:
+        return await self.session.scalar(
+            select(GateDecision).where(
+                GateDecision.campaign_id == campaign_id,
+                GateDecision.gate_code == "GATE_1_5",
+                GateDecision.decision == "REVISION_REQUESTED",
+                GateDecision.resource_version_id == resource_version_id,
+                GateDecision.reason == reason,
+                GateDecision.actor_id == actor_id,
+            )
+        )
+
+    def add_plan(self, plan: StageMediaPlan) -> None:
+        self.session.add(plan)
+
+    def add_version(self, version: StageMediaPlanVersion) -> None:
+        self.session.add(version)
+
+    async def get_idempotency(self, scope: str, key: str) -> dict[str, Any] | None:
+        record = await self.session.scalar(
+            select(IdempotencyRecord).where(
+                IdempotencyRecord.scope == scope,
+                IdempotencyRecord.idempotency_key == key,
+            )
+        )
+        return record.response_payload if record else None
+
+    def save_idempotency(self, *, scope: str, key: str, response: dict[str, Any]) -> None:
+        self.session.add(
+            IdempotencyRecord(
+                scope=scope,
+                idempotency_key=key,
+                response_payload=response,
+            )
+        )
+
+    async def next_execution_attempt(self, prefix: str) -> int:
+        count = await self.session.scalar(
+            select(func.count(HermesExecution.id)).where(
+                HermesExecution.request_id.like(f"{prefix}:attempt-%")
+            )
+        )
+        return int(count or 0) + 1
+
+    async def latest_execution(self, prefix: str) -> HermesExecution | None:
+        return await self.session.scalar(
+            select(HermesExecution)
+            .where(HermesExecution.request_id.like(f"{prefix}:attempt-%"))
+            .order_by(HermesExecution.created_at.desc())
+            .limit(1)
+        )
+
+    def add_execution(
+        self,
+        *,
+        campaign_id: UUID,
+        request_id: str,
+        stored_session_id: str | None,
+        status: str,
+        input_payload: dict[str, Any],
+        output_payload: dict[str, Any] | None = None,
+        error: str | None = None,
+    ) -> None:
+        self.session.add(
+            HermesExecution(
+                campaign_id=campaign_id,
+                request_id=request_id,
+                skill="marketing-media-plan",
+                hermes_session_id=stored_session_id,
+                status=status,
+                input_payload=input_payload,
+                output_payload=output_payload,
+                error=error,
+            )
+        )
