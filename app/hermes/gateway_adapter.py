@@ -315,6 +315,11 @@ class HermesGatewayAdapter:
         return (
             "请执行 marketing-media-plan。只生成输入阶段的完整千川投放计划；"
             "修改或补参模式也必须返回完整计划。最终只能输出符合 Skill 模板的 JSON 对象，"
+            "target_roi、allocation_ratio、stage_budget、amount 的非空值"
+            "必须是带引号的十进制字符串，"
+            "allocation_ratio 必须使用百分点：24 表示 24%，禁止输出 0.24；"
+            "全部预算单元的 allocation_ratio 合计必须等于 100，"
+            "amount 合计必须等于 stage_budget；"
             "不要输出分析、说明或 Markdown 代码块。\n输入：\n"
             + json.dumps(payload, ensure_ascii=False)
         )

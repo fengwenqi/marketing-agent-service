@@ -1,3 +1,4 @@
+from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -192,6 +193,21 @@ class MarketingStrategyResult(BaseModel):
 DecimalString = str
 
 
+def normalize_decimal_string(value: Any) -> Any:
+    """兼容 LLM 把十进制字符串输出为 JSON 数字，同时避免浮点参与业务计算。"""
+
+    if value is None or isinstance(value, str) or isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float, Decimal)):
+        try:
+            decimal_value = Decimal(str(value))
+        except InvalidOperation:
+            return value
+        if decimal_value.is_finite():
+            return format(decimal_value, "f")
+    return value
+
+
 class MediaPlanDeliveryObjective(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -201,6 +217,10 @@ class MediaPlanDeliveryObjective(BaseModel):
     objective: str = Field(min_length=1)
     target_roi: DecimalString | None = Field(
         default=None, pattern=r"^\d+(?:\.\d+)?$"
+    )
+
+    _normalize_target_roi = field_validator("target_roi", mode="before")(
+        normalize_decimal_string
     )
 
 
@@ -222,6 +242,10 @@ class MediaPlanBudgetUnit(BaseModel):
     amount: DecimalString | None = Field(default=None, pattern=r"^\d+(?:\.\d+)?$")
     audience_package_ids: list[str] = Field(min_length=1)
 
+    _normalize_decimal_fields = field_validator(
+        "allocation_ratio", "amount", mode="before"
+    )(normalize_decimal_string)
+
 
 class MediaPlanBudget(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -230,6 +254,10 @@ class MediaPlanBudget(BaseModel):
         default=None, pattern=r"^\d+(?:\.\d+)?$"
     )
     units: list[MediaPlanBudgetUnit] = Field(min_length=1)
+
+    _normalize_stage_budget = field_validator("stage_budget", mode="before")(
+        normalize_decimal_string
+    )
 
 
 class MediaPlanScheduleEntry(BaseModel):

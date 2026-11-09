@@ -100,6 +100,31 @@ def test_valid_A_stage_draft_is_accepted() -> None:
     assert len(result.creative_slots) == 15
 
 
+def test_numeric_decimal_fields_are_normalized_to_strings() -> None:
+    payload = valid_media_plan_payload()
+    payload["delivery_objective"]["target_roi"] = 2
+    payload["budget_plan"]["stage_budget"] = 0.5
+    payload["budget_plan"]["units"][0]["allocation_ratio"] = 100
+    payload["budget_plan"]["units"][0]["amount"] = 0.5
+
+    result = StageMediaPlanResult.model_validate(payload)
+
+    assert result.delivery_objective.target_roi == "2"
+    assert result.budget_plan.stage_budget == "0.5"
+    assert result.budget_plan.units[0].allocation_ratio == "100"
+    assert result.budget_plan.units[0].amount == "0.5"
+    assert result.model_dump(mode="json")["budget_plan"]["stage_budget"] == "0.5"
+
+
+@pytest.mark.parametrize("invalid_value", [True, float("nan"), float("inf")])
+def test_invalid_numeric_decimal_fields_are_rejected(invalid_value) -> None:
+    payload = valid_media_plan_payload()
+    payload["delivery_objective"]["target_roi"] = invalid_value
+
+    with pytest.raises(ValidationError):
+        StageMediaPlanResult.model_validate(payload)
+
+
 @pytest.mark.parametrize(
     "mutate",
     [

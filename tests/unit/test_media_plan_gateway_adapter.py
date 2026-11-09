@@ -98,6 +98,9 @@ def test_media_plan_prompt_contains_all_business_inputs() -> None:
     assert "10000.00" in prompt
     assert "强化核心人群测试" in prompt
     assert "A 阶段起量赛马投放草案" in prompt
+    assert "十进制字符串" in prompt
+    assert "24 表示 24%" in prompt
+    assert "合计必须等于 100" in prompt
 
 
 def test_media_plan_result_validation_accepts_contract() -> None:
