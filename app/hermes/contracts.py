@@ -357,3 +357,40 @@ class StageMediaPlanResult(BaseModel):
             raise ValueError("A stage requires 9 oral and 6 short video slots")
         return self
 
+
+class VideoScriptScene(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    scene_no: int = Field(ge=1)
+    start_second: int = Field(ge=0)
+    end_second: int = Field(gt=0)
+    visual_description: str = Field(min_length=1)
+    shot_type: str = Field(min_length=1)
+    voiceover: str = Field(min_length=1)
+    subtitle: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_time_range(self) -> "VideoScriptScene":
+        if self.end_second <= self.start_second:
+            raise ValueError("scene end_second must be greater than start_second")
+        return self
+
+
+class VideoScriptResult(BaseModel):
+    """Hermes 单个创意槽位视频脚本的严格白名单输出。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["1.0"]
+    creative_slot_id: str = Field(min_length=1)
+    creative_type: Literal["oral_video", "short_video"]
+    script_title: str = Field(min_length=1)
+    duration_seconds: int = Field(gt=0)
+    target_audience: str = Field(min_length=1)
+    core_message: str = Field(min_length=1)
+    hook: str = Field(min_length=1)
+    scenes: list[VideoScriptScene] = Field(min_length=1)
+    cta: str = Field(min_length=1)
+    compliance_notes: list[str]
+    production_notes: list[str]
+
