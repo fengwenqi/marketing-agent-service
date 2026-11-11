@@ -22,9 +22,7 @@ def _issue(code: str, field: str, message: str) -> ScriptValidationIssue:
     return ScriptValidationIssue(code=code, field=field, message=message)
 
 
-def validate_video_script(
-    result: VideoScriptResult, expected_slot: dict
-) -> ScriptValidationResult:
+def validate_video_script(result: VideoScriptResult, expected_slot: dict) -> ScriptValidationResult:
     """校验 LLM 脚本与被领取槽位及确定性时间轴的一致性。"""
 
     errors: list[ScriptValidationIssue] = []

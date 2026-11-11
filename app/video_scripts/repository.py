@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.business import (
     Campaign,
     CampaignStageWorkflow,
+    GateDecision,
     HermesExecution,
     IdempotencyRecord,
     MarketingStrategyVersion,
@@ -16,6 +17,7 @@ from app.models.business import (
     StageMediaPlanVersion,
     VideoScript,
     VideoScriptBatch,
+    VideoScriptConfirmationSet,
     VideoScriptJob,
     VideoScriptVersion,
 )
@@ -144,13 +146,111 @@ class VideoScriptRepository:
             "failed": counts["FAILED_RETRYABLE"],
         }
 
-    async def list_scripts(self, batch_id: UUID) -> list[VideoScript]:
-        rows = await self.session.scalars(
+    async def list_scripts(self, batch_id: UUID, *, lock: bool = False) -> list[VideoScript]:
+        statement = (
             select(VideoScript)
             .where(VideoScript.batch_id == batch_id)
             .order_by(VideoScript.creative_slot_id)
         )
+        if lock:
+            statement = statement.with_for_update()
+        rows = await self.session.scalars(statement)
         return list(rows)
+
+    async def get_script(
+        self, campaign_id: UUID, script_id: UUID, *, lock: bool = False
+    ) -> VideoScript | None:
+        statement = select(VideoScript).where(
+            VideoScript.id == script_id,
+            VideoScript.campaign_id == campaign_id,
+        )
+        if lock:
+            statement = statement.with_for_update()
+        return await self.session.scalar(statement)
+
+    async def get_script_version(self, version_id: UUID) -> VideoScriptVersion | None:
+        return await self.session.get(VideoScriptVersion, version_id)
+
+    async def list_script_versions(self, script_id: UUID) -> list[VideoScriptVersion]:
+        rows = await self.session.scalars(
+            select(VideoScriptVersion)
+            .where(VideoScriptVersion.video_script_id == script_id)
+            .order_by(VideoScriptVersion.version)
+        )
+        return list(rows)
+
+    async def next_script_version(self, script_id: UUID) -> int:
+        maximum = await self.session.scalar(
+            select(func.max(VideoScriptVersion.version)).where(
+                VideoScriptVersion.video_script_id == script_id
+            )
+        )
+        return int(maximum or 0) + 1
+
+    async def next_execution_attempt(self, prefix: str) -> int:
+        count = await self.session.scalar(
+            select(func.count(HermesExecution.id)).where(
+                HermesExecution.request_id.like(f"{prefix}:attempt-%")
+            )
+        )
+        return int(count or 0) + 1
+
+    async def latest_execution(self, prefix: str) -> HermesExecution | None:
+        return await self.session.scalar(
+            select(HermesExecution)
+            .where(HermesExecution.request_id.like(f"{prefix}:attempt-%"))
+            .order_by(HermesExecution.created_at.desc())
+            .limit(1)
+        )
+
+    async def get_confirmation_set(self, batch_id: UUID) -> VideoScriptConfirmationSet | None:
+        return await self.session.scalar(
+            select(VideoScriptConfirmationSet).where(
+                VideoScriptConfirmationSet.batch_id == batch_id
+            )
+        )
+
+    def add_confirmation_set(self, item: VideoScriptConfirmationSet) -> None:
+        self.session.add(item)
+
+    async def list_gate_decisions(self, campaign_id: UUID, batch_id: UUID) -> list[GateDecision]:
+        rows = await self.session.scalars(
+            select(GateDecision)
+            .where(
+                GateDecision.campaign_id == campaign_id,
+                GateDecision.gate_code == "GATE_2",
+                GateDecision.resource_id == batch_id,
+            )
+            .order_by(GateDecision.decision_version)
+        )
+        return list(rows)
+
+    async def add_gate_decision(
+        self,
+        *,
+        campaign_id: UUID,
+        actor_id: str,
+        batch_id: UUID,
+        confirmation_set_id: UUID,
+    ) -> GateDecision:
+        maximum = await self.session.scalar(
+            select(func.max(GateDecision.decision_version)).where(
+                GateDecision.campaign_id == campaign_id,
+                GateDecision.gate_code == "GATE_2",
+            )
+        )
+        row = GateDecision(
+            campaign_id=campaign_id,
+            gate_code="GATE_2",
+            decision="APPROVE",
+            actor_id=actor_id,
+            decision_version=int(maximum or 0) + 1,
+            resource_type="VIDEO_SCRIPT_BATCH",
+            resource_id=batch_id,
+            resource_version_id=confirmation_set_id,
+        )
+        self.session.add(row)
+        return row
 
     async def get_script_for_slot(
         self, batch_id: UUID, creative_slot_id: str, *, lock: bool = False
