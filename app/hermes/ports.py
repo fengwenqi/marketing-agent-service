@@ -5,6 +5,7 @@ from app.hermes.contracts import (
     MarketingContextResult,
     MarketingStrategyResult,
     StageMediaPlanResult,
+    VideoScriptResult,
 )
 
 
@@ -83,6 +84,26 @@ class MediaPlanGenerationResponse:
     stored_session_id: str
 
 
+@dataclass(frozen=True)
+class VideoScriptGenerationRequest:
+    campaign_id: str
+    stage_code: str
+    request_id: str
+    marketing_context: dict[str, Any]
+    confirmed_strategy: dict[str, Any]
+    confirmed_media_plan: dict[str, Any]
+    creative_slot: dict[str, Any]
+    stored_session_id: str | None = None
+    current_script: dict[str, Any] | None = None
+    revision_instruction: str | None = None
+
+
+@dataclass(frozen=True)
+class VideoScriptGenerationResponse:
+    result: VideoScriptResult
+    stored_session_id: str
+
+
 class HermesPort(Protocol):
     async def run_context_intake(self, request: ContextIntakeRequest) -> ContextIntakeResponse: ...
 
@@ -94,3 +115,6 @@ class HermesPort(Protocol):
         self, request: MediaPlanGenerationRequest
     ) -> MediaPlanGenerationResponse: ...
 
+    async def run_video_script_generation(
+        self, request: VideoScriptGenerationRequest
+    ) -> VideoScriptGenerationResponse: ...

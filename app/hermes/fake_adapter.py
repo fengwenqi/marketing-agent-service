@@ -4,6 +4,7 @@ from app.hermes.contracts import (
     MarketingContextResult,
     MarketingStrategyResult,
     StageMediaPlanResult,
+    VideoScriptResult,
 )
 from app.hermes.ports import (
     ContextIntakeRequest,
@@ -12,6 +13,8 @@ from app.hermes.ports import (
     MediaPlanGenerationResponse,
     StrategyGenerationRequest,
     StrategyGenerationResponse,
+    VideoScriptGenerationRequest,
+    VideoScriptGenerationResponse,
 )
 
 
@@ -21,13 +24,11 @@ class FakeHermesAdapter:
     def __init__(
         self,
         results: list[MarketingContextResult | ContextIntakeResponse | Exception],
-        strategy_results: list[
-            MarketingStrategyResult | StrategyGenerationResponse | Exception
-        ]
+        strategy_results: list[MarketingStrategyResult | StrategyGenerationResponse | Exception]
         | None = None,
-        media_plan_results: list[
-            StageMediaPlanResult | MediaPlanGenerationResponse | Exception
-        ]
+        media_plan_results: list[StageMediaPlanResult | MediaPlanGenerationResponse | Exception]
+        | None = None,
+        video_script_results: list[VideoScriptResult | VideoScriptGenerationResponse | Exception]
         | None = None,
     ) -> None:
         self._results = deque(results)
@@ -39,6 +40,9 @@ class FakeHermesAdapter:
         self._media_plan_results = deque(media_plan_results or [])
         self.media_plan_call_count = 0
         self.media_plan_requests: list[MediaPlanGenerationRequest] = []
+        self._video_script_results = deque(video_script_results or [])
+        self.video_script_call_count = 0
+        self.video_script_requests: list[VideoScriptGenerationRequest] = []
 
     async def run_context_intake(self, request: ContextIntakeRequest) -> ContextIntakeResponse:
         self.call_count += 1
@@ -85,3 +89,18 @@ class FakeHermesAdapter:
             or f"fake-media-plan-stored-{self.media_plan_call_count}",
         )
 
+    async def run_video_script_generation(
+        self, request: VideoScriptGenerationRequest
+    ) -> VideoScriptGenerationResponse:
+        self.video_script_call_count += 1
+        self.video_script_requests.append(request)
+        result = self._video_script_results.popleft()
+        if isinstance(result, Exception):
+            raise result
+        if isinstance(result, VideoScriptGenerationResponse):
+            return result
+        return VideoScriptGenerationResponse(
+            result=result,
+            stored_session_id=request.stored_session_id
+            or f"fake-video-script-stored-{self.video_script_call_count}",
+        )

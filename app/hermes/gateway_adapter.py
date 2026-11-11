@@ -10,6 +10,7 @@ from app.hermes.contracts import (
     MarketingContextResult,
     MarketingStrategyResult,
     StageMediaPlanResult,
+    VideoScriptResult,
 )
 from app.hermes.ports import (
     ContextIntakeRequest,
@@ -22,6 +23,8 @@ from app.hermes.ports import (
     MediaPlanGenerationResponse,
     StrategyGenerationRequest,
     StrategyGenerationResponse,
+    VideoScriptGenerationRequest,
+    VideoScriptGenerationResponse,
 )
 
 
@@ -74,9 +77,7 @@ class HermesGatewayAdapter:
         from hermes_cli.gateway_client import connect_gateway
 
         async with connect_gateway() as client:
-            session_id, stored_session_id, _ = await self._open_strategy_session(
-                client, request
-            )
+            session_id, stored_session_id, _ = await self._open_strategy_session(client, request)
             text = await self._submit_and_wait(
                 client,
                 session_id=session_id,
@@ -97,9 +98,7 @@ class HermesGatewayAdapter:
         from hermes_cli.gateway_client import connect_gateway
 
         async with connect_gateway() as client:
-            session_id, stored_session_id, _ = await self._open_media_plan_session(
-                client, request
-            )
+            session_id, stored_session_id, _ = await self._open_media_plan_session(client, request)
             text = await self._submit_and_wait(
                 client,
                 session_id=session_id,
@@ -108,6 +107,29 @@ class HermesGatewayAdapter:
             )
             return MediaPlanGenerationResponse(
                 result=self._validate_media_plan_result(text),
+                stored_session_id=stored_session_id,
+            )
+
+    async def run_video_script_generation(
+        self, request: VideoScriptGenerationRequest
+    ) -> VideoScriptGenerationResponse:
+        source = str(self.hermes_source)
+        if source not in sys.path:
+            sys.path.insert(0, source)
+        from hermes_cli.gateway_client import connect_gateway
+
+        async with connect_gateway() as client:
+            session_id, stored_session_id, _ = await self._open_video_script_session(
+                client, request
+            )
+            text = await self._submit_and_wait(
+                client,
+                session_id=session_id,
+                request_id=request.request_id,
+                prompt=self._video_script_prompt(request),
+            )
+            return VideoScriptGenerationResponse(
+                result=self._validate_video_script_result(text),
                 stored_session_id=stored_session_id,
             )
 
@@ -167,9 +189,7 @@ class HermesGatewayAdapter:
         runtime_id, stored_id = await self._create_session(client, request)
         return runtime_id, stored_id, False
 
-    async def _create_session(
-        self, client: Any, request: ContextIntakeRequest
-    ) -> tuple[str, str]:
+    async def _create_session(self, client: Any, request: ContextIntakeRequest) -> tuple[str, str]:
         description = await client.rpc("runtime.describe")
         parameters = description.get("session_create", {}).get("parameters", [])
         if "skills" not in parameters:
@@ -247,6 +267,41 @@ class HermesGatewayAdapter:
             source="tool",
             cwd=str(self.workspace),
             skills=["marketing-media-plan"],
+        )
+        return (
+            snapshot["session_id"],
+            snapshot.get("stored_session_id") or snapshot["session_id"],
+            bool(request.stored_session_id),
+        )
+
+    async def _open_video_script_session(
+        self, client: Any, request: VideoScriptGenerationRequest
+    ) -> tuple[str, str, bool]:
+        if request.stored_session_id:
+            try:
+                snapshot = await client.rpc(
+                    "session.resume",
+                    session_id=request.stored_session_id,
+                    source="tool",
+                )
+                return (
+                    snapshot["session_id"],
+                    snapshot.get("stored_session_id") or request.stored_session_id,
+                    False,
+                )
+            except Exception as error:
+                if str(error) not in {"not_found", "session_not_found"}:
+                    raise
+        description = await client.rpc("runtime.describe")
+        parameters = description.get("session_create", {}).get("parameters", [])
+        if "skills" not in parameters:
+            raise HermesGatewayError("Gateway session.create does not support skills")
+        snapshot = await client.rpc(
+            "session.create",
+            request_id=request.request_id,
+            source="tool",
+            cwd=str(self.workspace),
+            skills=["marketing-video-script"],
         )
         return (
             snapshot["session_id"],
@@ -333,9 +388,36 @@ class HermesGatewayAdapter:
                 "Hermes returned JSON that does not match StageMediaPlanResult"
             ) from error
 
-    async def _wait_for_completion(
-        self, client: Any, session_id: str, admission_id: str
-    ) -> str:
+    @staticmethod
+    def _video_script_prompt(request: VideoScriptGenerationRequest) -> str:
+        payload = {
+            "stage_code": request.stage_code,
+            "marketing_context": request.marketing_context,
+            "confirmed_strategy": request.confirmed_strategy,
+            "confirmed_media_plan": request.confirmed_media_plan,
+            "creative_slot": request.creative_slot,
+            "current_script": request.current_script,
+            "revision_instruction": request.revision_instruction,
+        }
+        return (
+            "请执行 marketing-video-script。只为输入的一个创意槽位生成完整视频脚本；"
+            "修改模式也必须返回完整脚本。最终只能输出符合 Skill 模板的 JSON 对象，"
+            "creative_slot_id 和 creative_type 必须与输入槽位完全一致，"
+            "场景时间轴必须从 0 开始、连续且最终时长一致；"
+            "不要输出分析、说明或 Markdown 代码块。\n输入：\n"
+            + json.dumps(payload, ensure_ascii=False)
+        )
+
+    @classmethod
+    def _validate_video_script_result(cls, text: str) -> VideoScriptResult:
+        try:
+            return VideoScriptResult.model_validate(cls._decode_json(text))
+        except ValidationError as error:
+            raise HermesOutputValidationError(
+                "Hermes returned JSON that does not match VideoScriptResult"
+            ) from error
+
+    async def _wait_for_completion(self, client: Any, session_id: str, admission_id: str) -> str:
         # Gateway 会通过 message.delta 流式发送正文。message.complete 主要表示本轮结束，
         # 其中的 text 在部分响应路径下可能为空，因此必须保留本轮的增量文本作为回退。
         streamed_chunks: list[str] = []
@@ -375,9 +457,7 @@ class HermesGatewayAdapter:
             ) from error
 
     @staticmethod
-    async def _get_receipt(
-        client: Any, session_id: str, admission_id: str
-    ) -> dict[str, Any]:
+    async def _get_receipt(client: Any, session_id: str, admission_id: str) -> dict[str, Any]:
         return await client.rpc(
             "prompt.receipt",
             session_id=session_id,
@@ -460,4 +540,3 @@ class HermesGatewayAdapter:
         if not isinstance(value, dict):
             raise HermesOutputValidationError("Hermes result must be a JSON object")
         return value
-
