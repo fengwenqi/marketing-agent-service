@@ -91,8 +91,32 @@ def test_transition_rejects_skipping_business_steps() -> None:
             StageWorkflowEvent.MEDIA_PLAN_CONFIRMED,
             StageWorkflowState.MEDIA_PLAN_CONFIRMED,
         ),
+        (
+            StageWorkflowState.MEDIA_PLAN_CONFIRMED,
+            StageWorkflowEvent.VIDEO_SCRIPTS_REQUESTED,
+            StageWorkflowState.VIDEO_SCRIPTS_GENERATING,
+        ),
+        (
+            StageWorkflowState.VIDEO_SCRIPTS_GENERATING,
+            StageWorkflowEvent.VIDEO_SCRIPTS_PARTIALLY_FAILED,
+            StageWorkflowState.VIDEO_SCRIPTS_PARTIAL_FAILURE,
+        ),
+        (
+            StageWorkflowState.VIDEO_SCRIPTS_PARTIAL_FAILURE,
+            StageWorkflowEvent.VIDEO_SCRIPTS_RETRY_REQUESTED,
+            StageWorkflowState.VIDEO_SCRIPTS_GENERATING,
+        ),
+        (
+            StageWorkflowState.VIDEO_SCRIPTS_GENERATING,
+            StageWorkflowEvent.VIDEO_SCRIPTS_CREATED,
+            StageWorkflowState.VIDEO_SCRIPTS_PENDING_CONFIRMATION,
+        ),
+        (
+            StageWorkflowState.VIDEO_SCRIPTS_PENDING_CONFIRMATION,
+            StageWorkflowEvent.VIDEO_SCRIPTS_CONFIRMED,
+            StageWorkflowState.VIDEO_SCRIPTS_CONFIRMED,
+        ),
     ],
 )
 def test_stage_transition_accepts_media_plan_paths(current, event, expected) -> None:
     assert transition_stage(current, event) is expected
-

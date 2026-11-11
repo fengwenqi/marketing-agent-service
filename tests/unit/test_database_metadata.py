@@ -14,6 +14,11 @@ def test_business_tables_are_registered() -> None:
         "campaign_stage_workflows",
         "stage_media_plans",
         "stage_media_plan_versions",
+        "video_script_batches",
+        "video_script_jobs",
+        "video_scripts",
+        "video_script_versions",
+        "video_script_confirmation_sets",
     }
 
 
@@ -96,3 +101,29 @@ def test_stage_workflows_and_media_plan_versions_are_constrained() -> None:
     assert versions.c.validation_result.nullable is False
     assert versions.c.content.nullable is False
 
+
+def test_video_script_batch_and_versions_are_constrained() -> None:
+    batches = Base.metadata.tables["video_script_batches"]
+    jobs = Base.metadata.tables["video_script_jobs"]
+    scripts = Base.metadata.tables["video_scripts"]
+    versions = Base.metadata.tables["video_script_versions"]
+    confirmation_sets = Base.metadata.tables["video_script_confirmation_sets"]
+
+    def uniques(table):
+        return {
+            tuple(column.name for column in constraint.columns)
+            for constraint in table.constraints
+            if constraint.__class__.__name__ == "UniqueConstraint"
+        }
+
+    assert ("source_media_plan_version_id",) in uniques(batches)
+    assert ("batch_id", "creative_slot_id") in uniques(jobs)
+    assert ("batch_id", "creative_slot_id") in uniques(scripts)
+    assert ("video_script_id", "version") in uniques(versions)
+    assert ("batch_id",) in uniques(confirmation_sets)
+    assert scripts.c.current_version_id.nullable is True
+    assert scripts.c.confirmed_version_id.nullable is True
+    assert versions.c.content.nullable is False
+    assert versions.c.validation_result.nullable is False
+    assert confirmation_sets.c.manifest.nullable is False
+    assert confirmation_sets.c.content_digest.nullable is False

@@ -25,5 +25,10 @@ def validate_gate_decision(
         and gate is GateCode.GATE_1_5
     ):
         return
+    if (
+        state is StageWorkflowState.VIDEO_SCRIPTS_PENDING_CONFIRMATION
+        and gate is GateCode.GATE_2
+    ):
+        return
     raise GateNotAvailableError(f"{gate} is unavailable while state is {state}")
 

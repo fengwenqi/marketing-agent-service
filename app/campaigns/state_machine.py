@@ -65,6 +65,26 @@ _STAGE_TRANSITIONS: dict[
         StageWorkflowState.MEDIA_PLAN_PENDING_CONFIRMATION,
         StageWorkflowEvent.MEDIA_PLAN_CONFIRMED,
     ): StageWorkflowState.MEDIA_PLAN_CONFIRMED,
+    (
+        StageWorkflowState.MEDIA_PLAN_CONFIRMED,
+        StageWorkflowEvent.VIDEO_SCRIPTS_REQUESTED,
+    ): StageWorkflowState.VIDEO_SCRIPTS_GENERATING,
+    (
+        StageWorkflowState.VIDEO_SCRIPTS_GENERATING,
+        StageWorkflowEvent.VIDEO_SCRIPTS_PARTIALLY_FAILED,
+    ): StageWorkflowState.VIDEO_SCRIPTS_PARTIAL_FAILURE,
+    (
+        StageWorkflowState.VIDEO_SCRIPTS_PARTIAL_FAILURE,
+        StageWorkflowEvent.VIDEO_SCRIPTS_RETRY_REQUESTED,
+    ): StageWorkflowState.VIDEO_SCRIPTS_GENERATING,
+    (
+        StageWorkflowState.VIDEO_SCRIPTS_GENERATING,
+        StageWorkflowEvent.VIDEO_SCRIPTS_CREATED,
+    ): StageWorkflowState.VIDEO_SCRIPTS_PENDING_CONFIRMATION,
+    (
+        StageWorkflowState.VIDEO_SCRIPTS_PENDING_CONFIRMATION,
+        StageWorkflowEvent.VIDEO_SCRIPTS_CONFIRMED,
+    ): StageWorkflowState.VIDEO_SCRIPTS_CONFIRMED,
 }
 
 

@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     hermes_workspace: Path = Path(r"D:\my-project\AI\Hermes")
     # 复杂 Skill 可能包含多轮检索；需覆盖模型限流重试和工具调用时间。
     hermes_turn_timeout_seconds: int = 600
+    # 本地单实例执行器限制同时调用 Hermes 的脚本数量，避免压垮 Gateway。
+    video_script_max_concurrency: int = 3
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

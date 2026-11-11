@@ -91,9 +91,7 @@ class MarketingStrategyFramework(TimestampMixin, Base):
 class MarketingStrategyVersion(TimestampMixin, Base):
     __tablename__ = "marketing_strategy_versions"
     __table_args__ = (
-        UniqueConstraint(
-            "framework_id", "version", name="uq_strategy_framework_version"
-        ),
+        UniqueConstraint("framework_id", "version", name="uq_strategy_framework_version"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
@@ -112,15 +110,11 @@ class MarketingStrategyVersion(TimestampMixin, Base):
 class CampaignStageWorkflow(TimestampMixin, Base):
     __tablename__ = "campaign_stage_workflows"
     __table_args__ = (
-        UniqueConstraint(
-            "campaign_id", "stage_code", name="uq_stage_workflow_campaign_stage"
-        ),
+        UniqueConstraint("campaign_id", "stage_code", name="uq_stage_workflow_campaign_stage"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    campaign_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("campaigns.id"), index=True
-    )
+    campaign_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("campaigns.id"), index=True)
     stage_code: Mapped[str] = mapped_column(String(1))
     state: Mapped[str] = mapped_column(String(64), index=True)
     version: Mapped[int] = mapped_column(default=1)
@@ -132,15 +126,11 @@ class CampaignStageWorkflow(TimestampMixin, Base):
 class StageMediaPlan(TimestampMixin, Base):
     __tablename__ = "stage_media_plans"
     __table_args__ = (
-        UniqueConstraint(
-            "campaign_id", "stage_code", name="uq_media_plan_campaign_stage"
-        ),
+        UniqueConstraint("campaign_id", "stage_code", name="uq_media_plan_campaign_stage"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    campaign_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("campaigns.id"), index=True
-    )
+    campaign_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("campaigns.id"), index=True)
     stage_workflow_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("campaign_stage_workflows.id"), unique=True
     )
@@ -171,32 +161,116 @@ class StageMediaPlan(TimestampMixin, Base):
 
 class StageMediaPlanVersion(TimestampMixin, Base):
     __tablename__ = "stage_media_plan_versions"
-    __table_args__ = (
-        UniqueConstraint(
-            "media_plan_id", "version", name="uq_media_plan_version"
-        ),
-    )
+    __table_args__ = (UniqueConstraint("media_plan_id", "version", name="uq_media_plan_version"),)
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    media_plan_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("stage_media_plans.id"), index=True
-    )
+    media_plan_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("stage_media_plans.id"), index=True)
     version: Mapped[int] = mapped_column(nullable=False)
     parent_version_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("stage_media_plan_versions.id")
     )
     status: Mapped[str] = mapped_column(String(32), index=True)
     revision_instruction: Mapped[str | None] = mapped_column(Text)
-    confirmation_inputs: Mapped[dict[str, Any]] = mapped_column(
-        json_type, nullable=False
-    )
-    missing_confirmation_fields: Mapped[list[str]] = mapped_column(
-        json_type, nullable=False
-    )
-    validation_result: Mapped[dict[str, Any]] = mapped_column(
-        json_type, nullable=False
-    )
+    confirmation_inputs: Mapped[dict[str, Any]] = mapped_column(json_type, nullable=False)
+    missing_confirmation_fields: Mapped[list[str]] = mapped_column(json_type, nullable=False)
+    validation_result: Mapped[dict[str, Any]] = mapped_column(json_type, nullable=False)
     content: Mapped[dict[str, Any]] = mapped_column(json_type, nullable=False)
+
+
+class VideoScriptBatch(TimestampMixin, Base):
+    __tablename__ = "video_script_batches"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    campaign_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("campaigns.id"), index=True)
+    stage_workflow_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("campaign_stage_workflows.id"), index=True
+    )
+    source_media_plan_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("stage_media_plans.id"), index=True
+    )
+    source_media_plan_version_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("stage_media_plan_versions.id"), unique=True
+    )
+    stage_code: Mapped[str] = mapped_column(String(1))
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    total_count: Mapped[int] = mapped_column(default=15)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class VideoScriptJob(TimestampMixin, Base):
+    __tablename__ = "video_script_jobs"
+    __table_args__ = (
+        UniqueConstraint("batch_id", "creative_slot_id", name="uq_script_job_batch_slot"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    batch_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("video_script_batches.id"), index=True)
+    creative_slot_id: Mapped[str] = mapped_column(String(100))
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    attempt_count: Mapped[int] = mapped_column(default=0)
+    last_error_code: Mapped[str | None] = mapped_column(String(64))
+    last_error_message: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class VideoScript(TimestampMixin, Base):
+    __tablename__ = "video_scripts"
+    __table_args__ = (
+        UniqueConstraint("batch_id", "creative_slot_id", name="uq_video_script_batch_slot"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    campaign_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("campaigns.id"), index=True)
+    batch_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("video_script_batches.id"), index=True)
+    creative_slot_id: Mapped[str] = mapped_column(String(100))
+    source_media_plan_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("stage_media_plans.id"))
+    source_media_plan_version_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("stage_media_plan_versions.id")
+    )
+    stage_code: Mapped[str] = mapped_column(String(1))
+    current_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey(
+            "video_script_versions.id", name="fk_video_script_current_version", use_alter=True
+        )
+    )
+    confirmed_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey(
+            "video_script_versions.id", name="fk_video_script_confirmed_version", use_alter=True
+        )
+    )
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    hermes_stored_session_id: Mapped[str | None] = mapped_column(String(128))
+
+
+class VideoScriptVersion(TimestampMixin, Base):
+    __tablename__ = "video_script_versions"
+    __table_args__ = (
+        UniqueConstraint("video_script_id", "version", name="uq_video_script_version"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    video_script_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("video_scripts.id"), index=True)
+    version: Mapped[int] = mapped_column(nullable=False)
+    parent_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("video_script_versions.id")
+    )
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    revision_instruction: Mapped[str | None] = mapped_column(Text)
+    validation_result: Mapped[dict[str, Any]] = mapped_column(json_type, nullable=False)
+    content: Mapped[dict[str, Any]] = mapped_column(json_type, nullable=False)
+
+
+class VideoScriptConfirmationSet(TimestampMixin, Base):
+    __tablename__ = "video_script_confirmation_sets"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    batch_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("video_script_batches.id"), unique=True)
+    manifest: Mapped[list[dict[str, Any]]] = mapped_column(json_type, nullable=False)
+    content_digest: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
 class HermesExecution(TimestampMixin, Base):
@@ -232,4 +306,3 @@ class IdempotencyRecord(TimestampMixin, Base):
     scope: Mapped[str] = mapped_column(String(100))
     idempotency_key: Mapped[str] = mapped_column(String(128))
     response_payload: Mapped[dict[str, Any]] = mapped_column(json_type)
-

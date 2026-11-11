@@ -43,3 +43,22 @@ def test_gate_1_5_rejects_unfinished_stage_media_plan() -> None:
             GateDecisionType.APPROVE,
         )
 
+
+def test_gate_2_is_available_for_complete_script_batch() -> None:
+    validate_gate_decision(
+        StageWorkflowState.VIDEO_SCRIPTS_PENDING_CONFIRMATION,
+        GateCode.GATE_2,
+        GateDecisionType.APPROVE,
+    )
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        StageWorkflowState.VIDEO_SCRIPTS_GENERATING,
+        StageWorkflowState.VIDEO_SCRIPTS_PARTIAL_FAILURE,
+    ],
+)
+def test_gate_2_rejects_unfinished_script_batch(state: StageWorkflowState) -> None:
+    with pytest.raises(GateNotAvailableError):
+        validate_gate_decision(state, GateCode.GATE_2, GateDecisionType.APPROVE)
