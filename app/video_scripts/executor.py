@@ -23,14 +23,22 @@ class VideoScriptBatchExecutor:
         self.hermes = hermes
         self.max_concurrency = max_concurrency
         self._tasks: set[asyncio.Task[None]] = set()
+        self._scheduled_batch_ids: set[UUID] = set()
 
     def schedule(self, batch_id: UUID) -> None:
+        # 同一 HTTP 幂等请求可能被前端重发；单进程内只保留一个批次执行协程。
+        if batch_id in self._scheduled_batch_ids:
+            return
+        self._scheduled_batch_ids.add(batch_id)
         task = asyncio.create_task(self._scheduled_run(batch_id))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
     async def _scheduled_run(self, batch_id: UUID) -> None:
-        await self.run_batch(batch_id)
+        try:
+            await self.run_batch(batch_id)
+        finally:
+            self._scheduled_batch_ids.discard(batch_id)
 
     async def run_batch(self, batch_id: UUID) -> VideoScriptBatchSnapshot:
         async with self.session_factory() as session:

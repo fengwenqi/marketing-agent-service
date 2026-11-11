@@ -1,6 +1,6 @@
 # Marketing Agent Service
 
-恒智影营销云的 FastAPI 业务服务。当前版本已完成活动上下文采集，以及从营销目标生成 A/B/C 阶段策略框架、按反馈修订、版本留痕和 Gate1 人工确认。
+恒智影营销云的 FastAPI 业务服务。当前版本已完成活动上下文采集、A/B/C 策略框架、A 阶段投放计划，以及 15 份视频脚本的批量生成、独立修订和 Gate2 整批确认。
 
 ## 本地结构
 
@@ -17,6 +17,8 @@ marketing-agent-service/
 ├─ app/                         # FastAPI 应用源码
 │  ├─ campaigns/               # 营销活动、对话、上下文采集和状态机
 │  ├─ strategies/              # A/B/C 策略生成、修订、版本与 Gate1
+│  ├─ media_plans/             # A 阶段投放计划、版本与 Gate1.5
+│  ├─ video_scripts/           # 15 份脚本批任务、修订版本与 Gate2
 │  ├─ hermes/                  # Hermes Gateway 适配层和结构化输出契约
 │  ├─ gates/                   # Gate 审核规则
 │  ├─ models/                  # SQLAlchemy 业务数据模型
@@ -24,7 +26,7 @@ marketing-agent-service/
 │  ├─ settings.py              # 环境变量配置
 │  └─ main.py                  # FastAPI 应用入口和路由注册
 ├─ migrations/                 # Alembic 数据库增量迁移
-│  └─ versions/                # 0001～0004 版本迁移脚本
+│  └─ versions/                # 0001～0006 版本迁移脚本
 ├─ scripts/                    # 本地开发和验证脚本
 ├─ tests/                      # 单元测试与 PostgreSQL 集成测试
 ├─ docker-compose.yml          # 本地 PostgreSQL 容器配置
@@ -59,6 +61,9 @@ marketing-agent-service/
 | `app/hermes/result_mapper.py` | 从 Hermes 响应中提取并转换结构化 JSON。 |
 | `app/hermes/fake_adapter.py` | 测试专用 Hermes 替身，避免自动化测试真实调用 LLM 或 Gateway。 |
 | `app/gates/policy.py` | 定义各 Gate 在不同活动状态下允许执行的审核动作。 |
+| `app/video_scripts/executor.py` | 以最大并发 3 执行 15 个脚本作业，并隔离单个槽位失败。 |
+| `app/video_scripts/service.py` | 管理脚本批次、单份脚本版本链、失败重试和 Gate2 原子确认。 |
+| `app/video_scripts/router.py` | 提供批量生成、查询、重试、单份修订和整批确认接口。 |
 | `migrations/versions/` | 保存数据库结构的增量变更；部署或更新后通过 `alembic upgrade head` 应用。 |
 | `tests/unit/` | 验证状态机、输出契约、Gateway 适配和 Gate 规则等独立逻辑。 |
 | `tests/integration/` | 使用 PostgreSQL 验证持久化、重启恢复、策略版本和完整 API 流程。 |
@@ -125,7 +130,7 @@ Hermes Gateway 独立服务端进程
 
 ## PostgreSQL 与 Alembic
 
-`docker compose up -d db` 负责启动 PostgreSQL；`alembic upgrade head` 负责把数据库结构升级到代码要求的最新版本。Alembic 会按版本顺序创建业务表以及自己的 `alembic_version` 记录；以后只执行尚未应用的增量迁移，不会重复创建已有表。阶段投放计划对应迁移版本为 `0005`。
+`docker compose up -d db` 负责启动 PostgreSQL；`alembic upgrade head` 负责把数据库结构升级到代码要求的最新版本。Alembic 会按版本顺序创建业务表以及自己的 `alembic_version` 记录；以后只执行尚未应用的增量迁移，不会重复创建已有表。阶段投放计划对应迁移版本为 `0005`，视频脚本批次与版本对应 `0006`。
 
 Alembic 管理的是表、字段、索引、外键和唯一约束等数据库结构，不负责启动数据库，也不负责写入营销活动数据。当前已建立以下表结构：
 
@@ -140,6 +145,11 @@ Alembic 管理的是表、字段、索引、外键和唯一约束等数据库结
 - `campaign_stage_workflows`
 - `stage_media_plans`
 - `stage_media_plan_versions`
+- `video_script_batches`
+- `video_script_jobs`
+- `video_scripts`
+- `video_script_versions`
+- `video_script_confirmation_sets`
 
 PostgreSQL 已是活动业务数据的事实来源。每个 HTTP 请求创建独立的 SQLAlchemy Session，`CampaignService` 通过 `CampaignRepository` 持久化活动、结构化上下文、对话历史、状态流转、Hermes 执行结果和幂等结果。重启 FastAPI 后数据不会丢失，前端可重新读取活动并继续原来的 Hermes 会话。
 
@@ -185,6 +195,13 @@ Password: marketing_agent_dev
 - `GET /api/v1/campaigns/{campaign_id}/media-plans/{stage_code}`
 - `POST /api/v1/campaigns/{campaign_id}/media-plans/{stage_code}/revise`
 - `POST /api/v1/campaigns/{campaign_id}/media-plans/{stage_code}/confirm`
+- `POST /api/v1/campaigns/{campaign_id}/video-script-batches/{stage_code}`
+- `GET /api/v1/campaigns/{campaign_id}/video-script-batches/{stage_code}`
+- `POST /api/v1/campaigns/{campaign_id}/video-script-batches/{stage_code}/retry`
+- `POST /api/v1/campaigns/{campaign_id}/video-script-batches/{stage_code}/confirm`
+- `GET /api/v1/campaigns/{campaign_id}/video-scripts/{stage_code}`
+- `GET /api/v1/campaigns/{campaign_id}/video-scripts/{stage_code}/{script_id}`
+- `POST /api/v1/campaigns/{campaign_id}/video-scripts/{stage_code}/{script_id}/revise`
 
 策略接口只允许在合法活动状态下调用。首次生成会创建策略 V1；用户提出修改意见时，Hermes 使用同一策略会话和当前完整版本生成一个新的完整版本，旧版本标记为 `SUPERSEDED` 但不会删除。修订请求本身也记录为 Gate1 的 `REVISION_REQUESTED` 决策。确认时前端必须提交当前 `expected_version`，后端把 `APPROVE` 决策绑定到该版本，避免用户在过期页面误确认旧策略。
 
@@ -228,7 +245,24 @@ MEDIA_PLAN_CONFIRMED
 
 前端可在 `generate` 请求中提供这些字段，也可以随后通过 `revise` 补充。补参和自然语言修改都会生成完整新版本；不会原地覆盖历史记录。所有写请求必须带 `Idempotency-Key`，修订和确认还必须带 `expected_version`，用于防止重试重复执行和旧页面覆盖新计划。
 
-当前计划仅在本系统内生成、修订、确认和持久化，不会调用千川 API，不会创建真实广告计划，也不会提前生成视频脚本或成片。
+当前计划仅在本系统内生成、修订、确认和持久化，不会调用千川 API，也不会创建真实广告计划；视频脚本只会在 Gate1.5 确认后生成，当前仍不生成视频成片。
+
+## A 阶段视频脚本与 Gate2
+
+Gate1.5 确认 A 阶段投放计划后，创建脚本批次会固定领取该计划中的 15 个创意槽位。接口立即返回 `202`，进程内执行器以最大并发 3 调用 `marketing-video-script` Skill；前端通过查询批次接口展示进度。单个任务失败不会回滚其余脚本，`retry` 只重跑失败槽位。
+
+每份脚本拥有独立 Hermes 会话和 V1/V2…版本链。修改失败不会覆盖当前版本，同一幂等键可安全重试；修改成功后旧版本标记为 `SUPERSEDED`。Gate2 不逐份确认：前端一次提交 15 个 `script_id + version_id`，后端校验它们仍是全部当前版本，并在一个数据库事务中确认 15 份脚本、写入确认清单与 Gate2 决策。任何一项过期或缺失都会整批拒绝，不会出现部分确认。
+
+```text
+MEDIA_PLAN_CONFIRMED
+  → 创建 15 个脚本作业 → 后台并发生成
+  ├─ 个别失败 → PARTIAL_FAILURE → 只重试失败项
+  └─ 全部成功 → VIDEO_SCRIPTS_PENDING_CONFIRMATION
+       ├─ 单份修改 → 新版本，继续等待
+       └─ Gate2 整批确认 → VIDEO_SCRIPTS_CONFIRMED
+```
+
+执行器是当前 FastAPI 单实例内的轻量实现。进程意外停止后，启动生命周期会把遗留的 `RUNNING` 作业转换为可重试状态；生产环境扩展到多个实例或需要任务队列时，应再迁移到专用 worker/队列。
 
 ## 代码阅读建议
 
@@ -241,4 +275,6 @@ MEDIA_PLAN_CONFIRMED
 7. `app/media_plans/validation.py`：预算、日期、素材数量和引用关系的硬校验。
 8. `app/media_plans/service.py`：阶段计划版本、失败恢复、幂等和 Gate1.5。
 9. `app/media_plans/router.py`：阶段计划 API 及稳定业务错误码。
+10. `app/video_scripts/executor.py`：持久化批任务和并发执行。
+11. `app/video_scripts/service.py`：脚本版本链与 Gate2 原子确认。
 

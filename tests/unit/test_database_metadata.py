@@ -45,13 +45,18 @@ def test_conversation_messages_have_stable_campaign_sequence() -> None:
 def test_strategy_framework_and_versions_are_registered() -> None:
     frameworks = Base.metadata.tables["marketing_strategy_frameworks"]
     versions = Base.metadata.tables["marketing_strategy_versions"]
+    framework_unique_columns = {
+        tuple(column.name for column in constraint.columns)
+        for constraint in frameworks.constraints
+        if constraint.__class__.__name__ == "UniqueConstraint"
+    }
     version_unique_columns = {
         tuple(column.name for column in constraint.columns)
         for constraint in versions.constraints
         if constraint.__class__.__name__ == "UniqueConstraint"
     }
 
-    assert frameworks.c.campaign_id.unique is True
+    assert ("campaign_id",) in framework_unique_columns
     assert frameworks.c.hermes_stored_session_id.nullable is True
     assert frameworks.c.current_version_id.nullable is True
     assert frameworks.c.confirmed_version_id.nullable is True

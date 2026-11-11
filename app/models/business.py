@@ -65,11 +65,10 @@ class GateDecision(TimestampMixin, Base):
 
 class MarketingStrategyFramework(TimestampMixin, Base):
     __tablename__ = "marketing_strategy_frameworks"
+    __table_args__ = (UniqueConstraint("campaign_id", name="uq_strategy_framework_campaign"),)
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    campaign_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("campaigns.id"), unique=True, index=True
-    )
+    campaign_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("campaigns.id"), index=True)
     status: Mapped[str] = mapped_column(String(32), index=True)
     current_version_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey(
@@ -179,6 +178,7 @@ class StageMediaPlanVersion(TimestampMixin, Base):
 
 class VideoScriptBatch(TimestampMixin, Base):
     __tablename__ = "video_script_batches"
+    __table_args__ = (UniqueConstraint("source_media_plan_version_id"),)
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     campaign_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("campaigns.id"), index=True)
@@ -189,7 +189,7 @@ class VideoScriptBatch(TimestampMixin, Base):
         ForeignKey("stage_media_plans.id"), index=True
     )
     source_media_plan_version_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("stage_media_plan_versions.id"), unique=True
+        ForeignKey("stage_media_plan_versions.id"), index=True
     )
     stage_code: Mapped[str] = mapped_column(String(1))
     status: Mapped[str] = mapped_column(String(32), index=True)
@@ -266,9 +266,10 @@ class VideoScriptVersion(TimestampMixin, Base):
 
 class VideoScriptConfirmationSet(TimestampMixin, Base):
     __tablename__ = "video_script_confirmation_sets"
+    __table_args__ = (UniqueConstraint("batch_id"),)
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    batch_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("video_script_batches.id"), unique=True)
+    batch_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("video_script_batches.id"), index=True)
     manifest: Mapped[list[dict[str, Any]]] = mapped_column(json_type, nullable=False)
     content_digest: Mapped[str] = mapped_column(String(64), nullable=False)
 
