@@ -87,7 +87,7 @@ $env:HERMES_HOME = 'D:\my-project\AI\Hermes\data\profiles\marketing-agent'
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --port 8000
 ```
 
-打开 `http://127.0.0.1:8000/docs` 使用 Swagger。所有写请求都必须传 `Idempotency-Key`，用于避免前端重试导致重复活动或重复 Agent 执行。
+接口地址为 `http://127.0.0.1:8000/docs` 使用 Swagger。所有写请求都必须传 `Idempotency-Key`，用于避免前端重试导致重复活动或重复 Agent 执行。
 
 日常开发可按以下顺序启动：
 
